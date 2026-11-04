@@ -132,14 +132,92 @@ public enum InvoiceReader {
         var test = Workspace(); try test.importInvoices(invoices, filename: "Validation"); return invoices
     }
 }
-public enum Exports {
-    public static func transactions(_ w: Workspace) -> String {
-        let header = ["Account", "Date", "Currency", "Amount", "Amount convention", "Original description", "Payee / client", "Type", "Category", "Invoice reference", "Cheque reference", "Bank reference", "Source", "Page"]
-        let rows = w.entries.filter(\.reviewed).sorted { $0.date < $1.date }.map { e -> [String] in
-            let account = w.account(e.accountID)
-            return [account?.name ?? "", e.date, "HKD", Money.plain(e.amount), account?.kind == .creditCard ? "Positive increases amount owed" : "Positive is money received", e.rawDescription, e.payee, e.typeTitle, e.category, e.invoiceReference, e.chequeReference, e.bankReference, w.statements.first { $0.id == e.statementID }?.filename ?? "", e.source.map { String($0.page + 1) } ?? ""]
+public enum XLSX {
+    public static func write(_ rows: [[String]], sheetName: String = "Transactions", numericColumns: Set<Int> = []) throws -> Data {
+        guard !rows.isEmpty else { throw LedgerError.invalid("Cannot write an empty workbook.") }
+        let safeName = String(sheetName.prefix(31))
+        var sheetRows = ""
+        for (ri, row) in rows.enumerated() {
+            var cells = ""
+            for (ci, value) in row.enumerated() {
+                let ref = columnLetter(ci) + String(ri + 1)
+                let trustedNumber = ri > 0 && numericColumns.contains(ci) && !value.isEmpty && value.range(of: #"^-?\d+(\.\d+)?$"#, options: .regularExpression) != nil
+                if trustedNumber, let number = Double(value) {
+                    cells += "<c r=\"\(ref)\"><v>\(number)</v></c>"
+                } else {
+                    cells += "<c r=\"\(ref)\" t=\"inlineStr\"><is><t>\(xmlEscape(value))</t></is></c>"
+                }
+            }
+            sheetRows += "<row r=\"\(ri + 1)\">\(cells)</row>"
         }
-        return CSV.write([header] + rows, numericColumns: [3,13])
+        let worksheet = """
+        <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>\(sheetRows)</sheetData></worksheet>
+        """
+        let parts: [String: String] = [
+            "[Content_Types].xml": """
+            <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>
+            """,
+            "_rels/.rels": """
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>
+            """,
+            "xl/workbook.xml": """
+            <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="\(xmlEscapeAttribute(safeName))" sheetId="1" r:id="rId1"/></sheets></workbook>
+            """,
+            "xl/_rels/workbook.xml.rels": """
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>
+            """,
+            "xl/worksheets/sheet1.xml": worksheet
+        ]
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".xlsx")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let archive = try Archive(url: url, accessMode: .create)
+        for (path, text) in parts {
+            let data = Data(text.utf8)
+            try archive.addEntry(with: path, type: .file, uncompressedSize: Int64(data.count), provider: { position, size in data.subdata(in: Int(position)..<Int(position) + size) })
+        }
+        return try Data(contentsOf: url)
+    }
+
+    private static func columnLetter(_ index: Int) -> String {
+        var n = index + 1, letters = ""
+        while n > 0 {
+            n -= 1
+            letters = String(UnicodeScalar(65 + (n % 26))!) + letters
+            n /= 26
+        }
+        return letters
+    }
+
+    private static func xmlEscape(_ text: String) -> String {
+        text.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+    }
+
+    private static func xmlEscapeAttribute(_ text: String) -> String { xmlEscape(text) }
+}
+
+public enum Exports {
+    private static let transactionHeader = ["Account", "Date", "Currency", "Amount", "Amount convention", "Original description", "Payee / client", "Type", "Category", "Invoice reference", "Cheque reference", "Bank reference", "Source", "Page"]
+    private static func entryRow(_ w: Workspace, _ e: Entry) -> [String] {
+        let account = w.account(e.accountID)
+        return [account?.name ?? "", e.date, "HKD", Money.plain(e.amount), account?.kind == .creditCard ? "Positive increases amount owed" : "Positive is money received", e.rawDescription, e.payee, e.typeTitle, e.category, e.invoiceReference, e.chequeReference, e.bankReference, w.statements.first { $0.id == e.statementID }?.filename ?? "", e.source.map { String($0.page + 1) } ?? ""]
+    }
+    public static func transactions(_ w: Workspace) -> String {
+        let rows = w.entries.filter(\.reviewed).sorted { $0.date < $1.date }.map { entryRow(w, $0) }
+        return CSV.write([transactionHeader] + rows, numericColumns: [3, 13])
+    }
+    public static func statement(_ w: Workspace, statementID: UUID) throws -> Data {
+        guard w.statements.contains(where: { $0.id == statementID }) else { throw LedgerError.invalid("Statement not found.") }
+        let header = transactionHeader + ["Reviewed"]
+        let rows = w.entries.filter { $0.statementID == statementID }.sorted { $0.date < $1.date }.map { entryRow(w, $0) + [$0.reviewed ? "Yes" : "No"] }
+        return try XLSX.write([header] + rows, numericColumns: [3, 13])
+    }
+    public static func suggestedStatementFilename(_ statement: Statement) -> String {
+        let base = (statement.filename as NSString).deletingPathExtension
+        let suffix = statement.periodEnd.isEmpty ? Day.today : statement.periodEnd
+        return "\(base)-\(suffix).xlsx"
     }
     public static func invoices(_ w: Workspace) -> String {
         CSV.write([["Invoice number", "Client", "Invoice date", "Due date", "Currency", "Original total", "Starting outstanding", "Current outstanding", "Status"]] + w.invoices.map { [$0.number, $0.client, $0.date, $0.dueDate, "HKD", Money.plain($0.total), Money.plain($0.startingOutstanding), Money.plain(w.outstanding($0)), w.invoiceStatus($0)] }, numericColumns: [5,6,7])

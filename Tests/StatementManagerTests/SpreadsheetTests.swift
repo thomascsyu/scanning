@@ -1,4 +1,5 @@
 import XCTest
+import CoreXLSX
 import ZIPFoundation
 @testable import StatementCore
 
@@ -40,5 +41,30 @@ final class SpreadsheetTests: XCTestCase {
             let invoices = try InvoiceReader.invoices(sheet: sheets[0], mapping: InvoiceReader.suggestedMapping(headers: sheets[0].rows[0]))
             XCTAssertEqual(invoices[0].number, "000123"); XCTAssertEqual(invoices[0].client, "測試客戶"); XCTAssertEqual(invoices[0].date, "2026-01-01"); XCTAssertEqual(invoices[0].startingOutstanding, 20050)
         }
+    }
+    func testStatementExportRoundTrip() throws {
+        let account = Account(name: "HSBC operating", bank: .hsbc, kind: .bank)
+        var statement = Statement(accountID: account.id, filename: "Synthetic.pdf", storedFilename: "synthetic.pdf", hash: "hash")
+        statement.periodEnd = "2026-01-31"
+        var entry = Entry(statementID: statement.id, accountID: account.id, date: "2026-01-20", amount: -12345, description: " =HYPERLINK(\"x\")")
+        entry.payee = "測試客戶"; entry.reviewed = false; entry.source = SourceRegion(page: 0, rect: .zero)
+        var workspace = Workspace(); workspace.accounts = [account]; workspace.statements = [statement]; workspace.entries = [entry]
+        let data = try Exports.statement(workspace, statementID: statement.id)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".xlsx")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try data.write(to: url)
+        let sheets = try InvoiceReader.sheets(url: url)
+        XCTAssertEqual(sheets.count, 1)
+        XCTAssertEqual(sheets[0].name, "Transactions")
+        let row = sheets[0].rows[1]
+        XCTAssertEqual(row[5], " =HYPERLINK(\"x\")")
+        XCTAssertEqual(row[6], "測試客戶")
+        XCTAssertEqual(row[3], "-123.45")
+        XCTAssertEqual(row[14], "No")
+        guard let file = XLSXFile(filepath: url.path) else { return XCTFail("Missing workbook") }
+        let worksheet = try file.parseWorksheet(at: "xl/worksheets/sheet1.xml")
+        let amountCell = worksheet.data?.rows[1].cells.first { $0.reference.column.value == "D" }
+        XCTAssertNil(amountCell?.inlineString)
+        XCTAssertEqual(amountCell?.value, "-123.45")
     }
 }
