@@ -209,6 +209,15 @@ public enum Money {
 }
 public enum Day {
     public static var today: String { let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"; f.timeZone = TimeZone(identifier: "Asia/Hong_Kong"); return f.string(from: Date()) }
+    public static func validMonth(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count == 7, trimmed[trimmed.index(trimmed.startIndex, offsetBy: 4)] == "-" else { return false }
+        let parts = trimmed.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts[0].count == 4, parts[1].count == 2,
+              let year = Int(parts[0]), year >= 1900, year <= 9999,
+              let month = Int(parts[1]), month >= 1, month <= 12 else { return false }
+        return true
+    }
     public static func valid(_ value: String) -> Bool {
         guard value.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil else { return false }
         let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.calendar = Calendar(identifier: .gregorian); f.timeZone = TimeZone(secondsFromGMT: 0); f.dateFormat = "yyyy-MM-dd"; f.isLenient = false

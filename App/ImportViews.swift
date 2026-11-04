@@ -17,6 +17,7 @@ struct PDFImportView: View {
     @State private var allowEmptyImport = false
     @State private var draftID = UUID()
     @State private var parsed: ParseResult?
+    @State private var reparseTask: Task<Void, Never>?
     var url: URL? { store.importURLs.indices.contains(index) ? store.importURLs[index] : nil }
     var existing: Statement? { guard let extracted else { return nil }; return store.workspace.statements.first { $0.hash == extracted.hash } }
     var account: Account? { store.workspace.accounts.first { $0.id == accountID } }
@@ -63,11 +64,20 @@ struct PDFImportView: View {
         }
         .onChange(of: accountID) { _, _ in reparse() }
         .onChange(of: periodEnd) { _, _ in reparse() }
+        .onDisappear { reparseTask?.cancel() }
     }
-    /// Parsing is regex-heavy; run it once per input change rather than on every body evaluation.
+    /// Parsing is regex-heavy; run off the main actor when inputs change.
     private func reparse() {
         guard let extracted, let account else { parsed = nil; return }
-        parsed = StatementParser.parse(extracted, statementID: existing?.id ?? draftID, account: account, periodEnd: periodEnd)
+        reparseTask?.cancel()
+        let pdf = extracted, acct = account, end = periodEnd, statementID = existing?.id ?? draftID
+        reparseTask = Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                StatementParser.parse(pdf, statementID: statementID, account: acct, periodEnd: end)
+            }.value
+            guard !Task.isCancelled else { return }
+            parsed = result
+        }
     }
     private func read() {
         guard let url else { return }; busy = true; message = nil; extracted = nil; parsed = nil
@@ -92,31 +102,49 @@ struct PDFImportView: View {
     }
     private func commit() {
         guard let url, let extracted, let account else { return }
-        do {
-            guard periodStart.isEmpty || (Day.valid(periodStart) && periodStart <= periodEnd) else { throw LedgerError.invalid("Enter a valid period start no later than the end.") }
-            var statement = existing ?? Statement(accountID: account.id, filename: url.lastPathComponent, storedFilename: UUID().uuidString + ".pdf", hash: extracted.hash)
-            if existing != nil {
-                let ids = Set(store.workspace.entries.filter { $0.statementID == statement.id }.map(\.id))
-                guard !store.workspace.allocations.contains(where: { ids.contains($0.entryID) }) else { throw LedgerError.invalid("Reverse this statement's payment allocations before replacing its extraction.") }
-            }
-            statement.accountID = account.id; statement.periodStart = periodStart; statement.periodEnd = periodEnd; statement.reconciled = false
-            let result = StatementParser.parse(extracted, statementID: statement.id, account: account, periodEnd: periodEnd)
-            guard !result.entries.isEmpty || allowEmptyImport else { throw LedgerError.invalid("No transactions were extracted. Choose manual entry explicitly to keep an empty import.") }
-            statement.parserVersion = StatementParser.version
-            statement.manualEntry = result.entries.isEmpty ? true : nil
-            statement.profile = result.profile; statement.warnings = result.warnings
-            statement.openingBalance = result.openingBalance ?? statement.openingBalance; statement.closingBalance = result.closingBalance ?? statement.closingBalance
-            store.error = nil
-            if existing == nil {
-                let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
-                try FileManager.default.copyItem(at: url, to: store.pdfURL(statement))
-            }
-            store.change(existing == nil ? "Import statement" : "Replace statement extraction") { state in
-                state.removeStatement(statement.id); state.statements.append(statement); state.entries.append(contentsOf: result.entries); state.flagDuplicates(); state.applyRules()
-            }
-            guard store.error == nil else { return }
-            store.selectedStatement = statement.id; store.section = .statements; next()
-        } catch { message = error.localizedDescription }
+        busy = true; message = nil
+        let suppliedPeriodStart = periodStart, suppliedPeriodEnd = periodEnd, allowEmpty = allowEmptyImport, isReplace = existing != nil
+        Task {
+            defer { busy = false }
+            do {
+                guard suppliedPeriodStart.isEmpty || (Day.valid(suppliedPeriodStart) && suppliedPeriodStart <= suppliedPeriodEnd) else {
+                    throw LedgerError.invalid("Enter a valid period start no later than the end.")
+                }
+                var statement = existing ?? Statement(accountID: account.id, filename: url.lastPathComponent, storedFilename: UUID().uuidString + ".pdf", hash: extracted.hash)
+                if existing != nil {
+                    let ids = Set(store.workspace.entries.filter { $0.statementID == statement.id }.map(\.id))
+                    guard !store.workspace.allocations.contains(where: { ids.contains($0.entryID) }) else {
+                        throw LedgerError.invalid("Reverse this statement's payment allocations before replacing its extraction.")
+                    }
+                }
+                statement.accountID = account.id; statement.periodStart = suppliedPeriodStart; statement.periodEnd = suppliedPeriodEnd; statement.reconciled = false
+                let pdf = extracted, acct = account
+                let result = await Task.detached(priority: .userInitiated) {
+                    StatementParser.parse(pdf, statementID: statement.id, account: acct, periodEnd: suppliedPeriodEnd)
+                }.value
+                guard !result.entries.isEmpty || allowEmpty else {
+                    throw LedgerError.invalid("No transactions were extracted. Choose manual entry explicitly to keep an empty import.")
+                }
+                statement.parserVersion = StatementParser.version
+                statement.manualEntry = result.entries.isEmpty ? true : nil
+                statement.profile = result.profile; statement.warnings = result.warnings
+                statement.openingBalance = result.openingBalance ?? statement.openingBalance; statement.closingBalance = result.closingBalance ?? statement.closingBalance
+                if existing == nil {
+                    let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
+                    try FileManager.default.copyItem(at: url, to: store.pdfURL(statement))
+                }
+                let snapshot = store.workspace
+                let prepared = try await Task.detached(priority: .userInitiated) {
+                    var workspace = snapshot
+                    try workspace.commitParsedStatement(statement, parseResult: result)
+                    return workspace
+                }.value
+                store.error = nil
+                store.change(isReplace ? "Replace statement extraction" : "Import statement") { $0 = prepared }
+                guard store.error == nil else { return }
+                store.selectedStatement = statement.id; store.section = .statements; next()
+            } catch { message = error.localizedDescription }
+        }
     }
     private func next() {
         if index + 1 >= store.importURLs.count { dismiss() }

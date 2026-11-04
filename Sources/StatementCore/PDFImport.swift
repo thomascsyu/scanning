@@ -93,8 +93,11 @@ public enum StatementParser {
             let rect = group.dropFirst().reduce(group[0].region.rect) { $0.union($1.region.rect) }
             return (sorted.map(\.text).joined(separator: " "), SourceRegion(page: group[0].region.page, rect: rect), group.contains(where: \.ocr), sorted)
         }
-        let moneyRegex = try! NSRegularExpression(pattern: #"(?:HK\$\s*)?\(?-?\d[\d,]*\.\d{2}(?![\d%])\)?(?:\s*(?:CR|DR))?"#, options: [.caseInsensitive])
-        let dateRegex = try! NSRegularExpression(pattern: #"^\s*(\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}(?:/\d{4})?|\d{1,2}-[A-Za-z]{3}(?:-\d{4})?|\d{1,2}\s+[A-Za-z]{3}(?:\s+\d{4})?)\b"#)
+        guard let moneyRegex = try? NSRegularExpression(pattern: #"(?:HK\$\s*)?\(?-?\d[\d,]*\.\d{2}(?![\d%])\)?(?:\s*(?:CR|DR))?"#, options: [.caseInsensitive]),
+              let dateRegex = try? NSRegularExpression(pattern: #"^\s*(\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}(?:/\d{4})?|\d{1,2}-[A-Za-z]{3}(?:-\d{4})?|\d{1,2}\s+[A-Za-z]{3}(?:\s+\d{4})?)\b"#) else {
+            warnings.append("Could not initialize the statement parser.")
+            return ParseResult(entries: [], warnings: warnings, profile: profile)
+        }
         let openingPhrases = ["opening balance", "previous balance", "balance brought", "b/f balance", "承前結餘", "上期結欠"]
         let closingPhrases = ["closing balance", "new balance", "balance carried", "c/f balance", "本期結欠", "期末結餘"]
         var entries: [Entry] = [], skipped = 0, inherited = 0, ignored = 0

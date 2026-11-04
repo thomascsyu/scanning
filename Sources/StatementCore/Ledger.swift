@@ -28,6 +28,15 @@ public extension Workspace {
         entries.removeAll { $0.statementID == id }
         statements.removeAll { $0.id == id }
     }
+    /// Replace or add a statement and its parsed rows, then re-run duplicate detection and rules.
+    mutating func commitParsedStatement(_ statement: Statement, parseResult: ParseResult) throws {
+        removeStatement(statement.id)
+        statements.append(statement)
+        entries.append(contentsOf: parseResult.entries)
+        flagDuplicates()
+        applyRules()
+        try validate()
+    }
     mutating func importInvoices(_ incoming: [Invoice], filename: String) throws {
         var next = self
         var inserted: [UUID] = [], previous: [Invoice] = []

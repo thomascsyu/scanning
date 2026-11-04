@@ -11,7 +11,8 @@ import StatementCore
     var busy = false
     var section: Section = .statements
     var selectedStatement: UUID?
-    var selectedEntry: UUID?
+    var selectedStatementEntry: UUID?
+    var selectedTransactionEntry: UUID?
     var selectedInvoice: UUID?
     var importURLs: [URL] = []
     var showPDFImport = false
@@ -117,7 +118,23 @@ import StatementCore
     func removeStatement(_ statement: Statement) {
         let alert = NSAlert(); alert.messageText = "Roll back this statement import?"; alert.informativeText = "Its transactions and payment allocations will be removed. Original PDFs are retained locally for Undo. Invoices remain in the workspace."; alert.addButton(withTitle: "Roll back import"); alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        change("Roll back statement import") { $0.removeStatement(statement.id) }; selectedStatement = nil; selectedEntry = nil
+        change("Roll back statement import") { $0.removeStatement(statement.id) }; selectedStatement = nil; selectedStatementEntry = nil
+    }
+    func applyRulesInBackground() {
+        let snapshot = workspace
+        busy = true
+        Task {
+            defer { busy = false }
+            do {
+                let next = try await Task.detached(priority: .userInitiated) {
+                    var w = snapshot
+                    w.applyRules()
+                    try w.validate()
+                    return w
+                }.value
+                change("Apply categorization rules") { $0 = next }
+            } catch { self.error = error.localizedDescription }
+        }
     }
     func saveEntry(_ value: Entry) {
         change("Edit transaction") { state in
@@ -132,17 +149,43 @@ import StatementCore
     func recoverEmptyImports() async {
         guard !checkedEmptyImports else { return }; checkedEmptyImports = true
         let empty = workspace.statements.filter { statement in !workspace.entries.contains { $0.statementID == statement.id } }
+        guard !empty.isEmpty else { return }
+        busy = true
+        defer { busy = false }
+        var failures: [String] = []
         for statement in empty {
             let url = pdfURL(statement)
+            let label = statement.filename
             do {
                 let pdf = try await Task.detached(priority: .utility) { try PDFExtractor.read(url: url) }.value
-                guard workspace.statements.first(where: { $0.id == statement.id }) == statement else { continue }
-                var candidate = workspace
-                if try candidate.recoverEmptyImport(statementID: statement.id, pdf: pdf) {
+                guard workspace.statements.first(where: { $0.id == statement.id }) != nil else { continue }
+                let snapshot = workspace
+                let recovered = try await Task.detached(priority: .userInitiated) {
+                    var candidate = snapshot
+                    guard try candidate.recoverEmptyImport(statementID: statement.id, pdf: pdf) else { return nil as Workspace? }
+                    return candidate
+                }.value
+                if let candidate = recovered {
                     change("Recover empty PDF import") { $0 = candidate }
-                    if error == nil { selectedStatement = statement.id; notice = "Recovered \(candidate.entries.filter { $0.statementID == statement.id }.count) transactions from your PDF. The count and totals match; please review the table." }
+                    if error == nil {
+                        selectedStatement = statement.id
+                        notice = "Recovered \(candidate.entries.filter { $0.statementID == statement.id }.count) transactions from your PDF. The count and totals match; please review the table."
+                    }
                 }
-            } catch { /* Preserve the import; password-protected/unsupported files have an explicit retry action. */ }
+            } catch PDFImportError.password {
+                failures.append("\(label): PDF needs a password. Open the statement and choose Read PDF with the password.")
+            } catch {
+                failures.append("\(label): \(error.localizedDescription)")
+            }
+        }
+        if !failures.isEmpty {
+            let summary = failures.prefix(3).joined(separator: " ")
+            let extra = failures.count > 3 ? " (\(failures.count - 3) more)" : ""
+            if notice == nil {
+                notice = "Could not auto-recover some empty imports. \(summary)\(extra)"
+            } else {
+                notice = notice! + " Some empty imports could not be recovered automatically."
+            }
         }
     }
     func newEntry(statement: Statement) {

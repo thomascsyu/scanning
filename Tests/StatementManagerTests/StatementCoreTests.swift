@@ -21,6 +21,8 @@ final class StatementCoreTests: XCTestCase {
         for invalid in ["1.234", "", "NaN", "12abc", "1e6", "999999999999999999999999999"] { XCTAssertThrowsError(try Money.parse(invalid)) }
     }
     func testCalendarAndYearBoundary() throws {
+        XCTAssertTrue(Day.validMonth("2026-01")); XCTAssertTrue(Day.validMonth("2024-02"))
+        XCTAssertFalse(Day.validMonth("2026-13")); XCTAssertFalse(Day.validMonth("26-01")); XCTAssertFalse(Day.validMonth("2026/01"))
         XCTAssertFalse(Day.valid("2026-02-30")); XCTAssertTrue(Day.valid("2024-02-29"))
         XCTAssertEqual(try Day.parse("31/01/2026"), "2026-01-31")
         XCTAssertEqual(StatementParser.transactionDate("31 Dec", end: "2026-01-31"), "2025-12-31")
@@ -85,6 +87,16 @@ final class StatementCoreTests: XCTestCase {
     func testDuplicateInvoiceNumbersRejectedAtomically() throws {
         var w = fixture(); let before = w
         XCTAssertThrowsError(try w.importInvoices([invoice(),invoice()], filename: "duplicate.csv")); XCTAssertEqual(w, before)
+    }
+    func testCommitParsedStatementAppliesRules() throws {
+        var w = fixture()
+        var rule = CategoryRule(); rule.name = "Client"; rule.pattern = "CLIENT"; rule.category = "Revenue"; rule.direction = .incoming; rule.type = .clientPayment
+        w.rules = [rule]
+        let stmt = w.statements[0]
+        let row = Entry(statementID: stmt.id, accountID: w.accounts[0].id, date: "2026-01-05", amount: 5000, description: "CLIENT payment")
+        let result = ParseResult(entries: [row], warnings: [], profile: "test", openingBalance: 0, closingBalance: 5000)
+        try w.commitParsedStatement(stmt, parseResult: result)
+        XCTAssertEqual(w.entries.count, 1); XCTAssertEqual(w.entries[0].category, "Revenue")
     }
     func testRulePriorityConflictAndManualPreservation() throws {
         var w = fixture(); var e = entry(w, amount: -2000, description: "ACME SOFTWARE"); e.reviewed = false; w.entries = [e]

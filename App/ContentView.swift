@@ -33,6 +33,14 @@ struct ContentView: View {
                 }
             }
             .navigationTitle(store.section.rawValue)
+            .overlay {
+                if store.busy {
+                    ZStack {
+                        Color.black.opacity(0.06)
+                        ProgressView("Working…").padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    }.ignoresSafeArea()
+                }
+            }
             .toolbar {
                 ToolbarItemGroup {
                     Button { store.openPDFs() } label: { Label("Import Statements", systemImage: "square.and.arrow.down") }.disabled(store.showPDFImport)
@@ -131,7 +139,7 @@ struct StatementDetail: View {
     @State private var closing = ""
     @State private var showPDF = true
     var entries: [Entry] { store.workspace.entries.filter { $0.statementID == statement.id } }
-    var selectedEntry: Entry? { entries.first { $0.id == store.selectedEntry } }
+    var selectedEntry: Entry? { entries.first { $0.id == store.selectedStatementEntry } }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack { VStack(alignment: .leading) { Text(statement.filename).font(.title3.bold()); Text(statement.profile).font(.caption).foregroundStyle(.secondary) }; Spacer(); Menu { Button("Retry with OCR…") { store.reextract(statement, forceOCR: true) }; Button("Roll back import…", role: .destructive) { store.removeStatement(statement) } } label: { Image(systemName: "ellipsis.circle") } }
@@ -151,7 +159,7 @@ struct StatementDetail: View {
                     HStack { Text("\(entries.count) transactions").font(.headline); Spacer(); Toggle("Show PDF", isOn: $showPDF).toggleStyle(.checkbox); Button("Add row") { store.newEntry(statement: statement) } }
                     if entries.isEmpty {
                         ContentUnavailableView { Label("No transactions extracted", systemImage: "tablecells.badge.ellipsis") } description: { Text("The PDF was saved, but the earlier parser could not build its table.") } actions: { Button("Extract transactions") { store.reextract(statement) }.buttonStyle(.borderedProminent) }
-                    } else { EntryTable(store: store, entries: entries) }
+                    } else { EntryTable(store: store, entries: entries, selection: $store.selectedStatementEntry) }
                     HStack { Text("\(entries.filter(\.reviewed).count) reviewed").font(.caption).foregroundStyle(.secondary); Spacer(); Button(statement.reconciled ? "Reconciled" : "Mark reconciled") { store.change("Reconcile statement") { w in if let i = w.statements.firstIndex(where: { $0.id == statement.id }) { w.statements[i].reconciled = true } } }.disabled(statement.reconciled || store.workspace.reconciliationDifference(statement) != 0 || entries.contains { !$0.reviewed || $0.duplicateCandidate }) }
                 }.frame(minWidth: 440)
                 if showPDF { PDFPreview(url: store.pdfURL(statement), region: selectedEntry?.source).frame(minWidth: 240) }
@@ -165,8 +173,9 @@ struct StatementDetail: View {
 struct EntryTable: View {
     @Bindable var store: AppStore
     var entries: [Entry]
+    @Binding var selection: UUID?
     var body: some View {
-        Table(entries, selection: $store.selectedEntry) {
+        Table(entries, selection: $selection) {
             TableColumn("Date", value: \.date).width(85)
             TableColumn("Description") { e in VStack(alignment: .leading, spacing: 3) { Text(e.rawDescription).lineLimit(2); HStack { if e.usedOCR { Text("OCR") }; if e.duplicateCandidate { Text("Possible duplicate") }; if e.reviewed { Text("Reviewed") } else { Text("Needs review") } }.font(.caption2).foregroundStyle(e.reviewed ? Color.secondary : Color.orange) } }.width(min: 140, ideal: 220)
             TableColumn("Payee / Client") { Text($0.payee.isEmpty ? "—" : $0.payee).lineLimit(2).help($0.payee) }.width(min: 110, ideal: 160)
@@ -178,7 +187,7 @@ struct EntryTable: View {
         .contextMenu(forSelectionType: UUID.self) { ids in
             if let id = ids.first, let e = entries.first(where: { $0.id == id }) { Button("Review / Edit…") { store.editingEntry = e } }
         } primaryAction: { ids in if let id = ids.first { store.editingEntry = entries.first { $0.id == id } } }
-        Button("Review selected transaction…") { store.editingEntry = entries.first { $0.id == store.selectedEntry } }.disabled(!entries.contains { $0.id == store.selectedEntry })
+        Button("Review selected transaction…") { store.editingEntry = entries.first { $0.id == selection } }.disabled(!entries.contains { $0.id == selection })
     }
 }
 struct TransactionsView: View {
@@ -194,14 +203,14 @@ struct TransactionsView: View {
     } }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { TextField("Search descriptions, clients, references…", text: $search).textFieldStyle(.roundedBorder); Toggle("Needs review", isOn: $onlyReview).toggleStyle(.checkbox); Button("Apply rules") { store.change("Apply categorization rules") { $0.applyRules() } } }
+            HStack { TextField("Search descriptions, clients, references…", text: $search).textFieldStyle(.roundedBorder); Toggle("Needs review", isOn: $onlyReview).toggleStyle(.checkbox); Button("Apply rules") { store.applyRulesInBackground() }.disabled(store.busy) }
             HStack {
                 Picker("Direction", selection: $direction) { Text("All").tag(RuleDirection.any); Text("Credits / money in").tag(RuleDirection.incoming); Text("Debits / money out").tag(RuleDirection.outgoing) }.frame(width: 270)
                 Picker("Sort by", selection: $sort) { ForEach(["Date", "Type", "Category"], id: \.self) { Text($0) } }.frame(width: 200)
                 Text("Bank: + credit, − debit. Card: + charge, − repayment/refund.").font(.caption).foregroundStyle(.secondary)
             }
             if store.workspace.entries.isEmpty { ContentUnavailableView("No transactions yet", systemImage: "list.bullet.rectangle", description: Text("Import a statement, then review its extracted transactions.")) }
-            else { EntryTable(store: store, entries: entries) }
+                    else { EntryTable(store: store, entries: entries, selection: $store.selectedStatementEntry) }
         }.padding(20)
     }
 }
