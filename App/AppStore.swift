@@ -105,13 +105,25 @@ import StatementCore
         } catch { self.error = error.localizedDescription }
     }
     func exportAllTransactionsExcel() {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [UTType(filenameExtension: "xlsx")!]
-        panel.nameFieldStringValue = Exports.suggestedAllTransactionsFilename()
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Export"
+        panel.message = "Bank statements and credit card statements are written into separate folders."
+        guard panel.runModal() == .OK, let root = panel.url else { return }
         do {
-            try Exports.allTransactions(workspace).write(to: url)
-            notice = "Exported \(workspace.entries.count) transactions to Excel."
+            var notes: [String] = []
+            for folder in StatementFolder.allCases {
+                let count = workspace.entries(in: folder).count
+                guard count > 0 else { continue }
+                let directory = root.appendingPathComponent(folder.rawValue, isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let file = directory.appendingPathComponent(Exports.suggestedAllTransactionsFilename())
+                try Exports.allTransactions(workspace, folder: folder).write(to: file)
+                notes.append("\(count) \(folder == .bank ? "bank" : "credit card")")
+            }
+            notice = notes.isEmpty ? "No transactions to export." : "Exported \(notes.joined(separator: " and ")) transactions into separate folders."
         } catch { self.error = error.localizedDescription }
     }
     func backup() {

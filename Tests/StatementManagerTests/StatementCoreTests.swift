@@ -16,6 +16,25 @@ final class StatementCoreTests: XCTestCase {
         var e = Entry(statementID: w.statements[0].id, accountID: w.accounts[0].id, date: "2026-01-20", amount: amount, description: description); e.reviewed = true; return e
     }
     func invoice(_ number: String = "INV-001", total: Int64 = 10000) -> Invoice { Invoice(number: number, client: "Example Client", date: "2026-01-01", total: total, outstanding: total) }
+    func testStatementFoldersKeepBankAndCreditApart() {
+        let bank = Account(name: "Operating", bank: .hsbc, kind: .bank)
+        let card = Account(name: "Card", bank: .hsbc, kind: .creditCard)
+        var older = Statement(accountID: bank.id, filename: "Older.pdf", storedFilename: "o.pdf", hash: "o")
+        older.importedAt = Date(timeIntervalSince1970: 100)
+        var newer = Statement(accountID: bank.id, filename: "Newer.pdf", storedFilename: "n.pdf", hash: "n")
+        newer.importedAt = Date(timeIntervalSince1970: 200)
+        let cardStatement = Statement(accountID: card.id, filename: "Card.pdf", storedFilename: "c.pdf", hash: "c")
+        let bankEntry = Entry(statementID: newer.id, accountID: bank.id, date: "2026-01-02", amount: -100, description: "Rent")
+        let cardEntry = Entry(statementID: cardStatement.id, accountID: card.id, date: "2026-01-03", amount: 200, description: "Software")
+        var workspace = Workspace()
+        workspace.accounts = [bank, card]
+        workspace.statements = [older, cardStatement, newer]
+        workspace.entries = [cardEntry, bankEntry]
+        XCTAssertEqual(workspace.statements(in: .bank).map(\.filename), ["Newer.pdf", "Older.pdf"])
+        XCTAssertEqual(workspace.statements(in: .creditCard).map(\.filename), ["Card.pdf"])
+        XCTAssertEqual(workspace.entries(in: .bank).map(\.id), [bankEntry.id])
+        XCTAssertEqual(workspace.entries(in: .creditCard).map(\.id), [cardEntry.id])
+    }
     func testMoneyRoundTripAndSigns() throws {
         for (input, expected): (String, Int64) in [("HK$ 1,234.56",123456),("(12.34)",-1234),("25.00 CR",-2500),("25.00 DR",2500),("-0.01",-1)] { XCTAssertEqual(try Money.parse(input), expected); XCTAssertEqual(try Money.parse(Money.plain(expected)), expected) }
         for invalid in ["1.234", "", "NaN", "12abc", "1e6", "999999999999999999999999999"] { XCTAssertThrowsError(try Money.parse(invalid)) }
