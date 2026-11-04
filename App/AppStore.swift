@@ -100,7 +100,18 @@ import StatementCore
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             try Exports.statement(workspace, statementID: id).write(to: url)
-            notice = "Exported statement to Excel."
+            let count = workspace.entries.filter { $0.statementID == id }.count
+            notice = "Exported \(count) transactions to Excel."
+        } catch { self.error = error.localizedDescription }
+    }
+    func exportAllTransactionsExcel() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "xlsx")!]
+        panel.nameFieldStringValue = Exports.suggestedAllTransactionsFilename()
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try Exports.allTransactions(workspace).write(to: url)
+            notice = "Exported \(workspace.entries.count) transactions to Excel."
         } catch { self.error = error.localizedDescription }
     }
     func backup() {

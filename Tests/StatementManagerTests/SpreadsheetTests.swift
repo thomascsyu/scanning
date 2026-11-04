@@ -66,5 +66,76 @@ final class SpreadsheetTests: XCTestCase {
         let amountCell = worksheet.data?.rows[1].cells.first { $0.reference.column.value == "D" }
         XCTAssertNil(amountCell?.inlineString)
         XCTAssertEqual(amountCell?.value, "-123.45")
+        let archive = try Archive(url: url, accessMode: .read)
+        var sheetXML = Data()
+        guard let sheetEntry = archive["xl/worksheets/sheet1.xml"] else { return XCTFail("Missing worksheet") }
+        _ = try archive.extract(sheetEntry) { sheetXML.append($0) }
+        let xml = String(decoding: sheetXML, as: UTF8.self)
+        XCTAssertTrue(xml.contains("<v>-123.45</v>"))
+        XCTAssertTrue(archive["xl/styles.xml"] != nil)
+    }
+    func testAllTransactionsExcelIncludesEveryStatementRow() throws {
+        let operating = Account(name: "HSBC operating", bank: .hsbc, kind: .bank)
+        let card = Account(name: "HSBC card", bank: .hsbc, kind: .creditCard)
+        var january = Statement(accountID: operating.id, filename: "January.pdf", storedFilename: "a.pdf", hash: "a")
+        january.periodEnd = "2026-01-31"
+        var february = Statement(accountID: card.id, filename: "February.pdf", storedFilename: "b.pdf", hash: "b")
+        february.periodEnd = "2026-02-28"
+        var reviewed = Entry(statementID: january.id, accountID: operating.id, date: "2026-01-05", amount: 1000, description: "Client receipt")
+        reviewed.reviewed = true
+        reviewed.payee = "測試客戶"
+        var unreviewed = Entry(statementID: january.id, accountID: operating.id, date: "2026-01-20", amount: -1000, description: " =HYPERLINK(\"x\")")
+        var cardCharge = Entry(statementID: february.id, accountID: card.id, date: "2026-02-02", amount: 250, description: "Software")
+        cardCharge.source = SourceRegion(page: 1, rect: .zero)
+        var workspace = Workspace()
+        workspace.accounts = [operating, card]
+        workspace.statements = [january, february]
+        workspace.entries = [unreviewed, cardCharge, reviewed]
+        XCTAssertEqual(Exports.suggestedAllTransactionsFilename(on: "2026-01-31"), "all-transactions-2026-01-31.xlsx")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".xlsx")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Exports.allTransactions(workspace).write(to: url)
+        let rows = try InvoiceReader.sheets(url: url)[0].rows
+        XCTAssertEqual(rows.count, 4)
+        XCTAssertEqual(rows[0].last, "Statement date")
+        XCTAssertEqual(rows[1][0], "HSBC operating")
+        XCTAssertEqual(rows[1][3], "10.00")
+        XCTAssertEqual(rows[1][6], "測試客戶")
+        XCTAssertEqual(rows[1][14], "Yes")
+        XCTAssertEqual(rows[1][15], "2026-01-31")
+        XCTAssertEqual(rows[2][3], "-10.00")
+        XCTAssertEqual(rows[2][5], " =HYPERLINK(\"x\")")
+        XCTAssertEqual(rows[2][14], "No")
+        XCTAssertEqual(rows[3][0], "HSBC card")
+        XCTAssertEqual(rows[3][3], "2.50")
+        XCTAssertEqual(rows[3][4], "Positive increases amount owed")
+        XCTAssertEqual(rows[3][12], "February.pdf")
+        XCTAssertEqual(rows[3][13], "2")
+        XCTAssertEqual(rows[3][15], "2026-02-28")
+        let statementURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".xlsx")
+        defer { try? FileManager.default.removeItem(at: statementURL) }
+        try Exports.statement(workspace, statementID: january.id).write(to: statementURL)
+        let statementRows = try InvoiceReader.sheets(url: statementURL)[0].rows
+        XCTAssertEqual(statementRows.count, 3)
+        XCTAssertEqual(statementRows[0].count, 15)
+        XCTAssertTrue(statementRows.dropFirst().allSatisfy { $0[12] == "January.pdf" })
+        XCTAssertEqual(statementRows.filter { $0.count > 14 && $0[14] == "No" }.count, 1)
+        let archive = try Archive(url: url, accessMode: .read)
+        var sheetXML = Data()
+        guard let sheetEntry = archive["xl/worksheets/sheet1.xml"] else { return XCTFail("Missing worksheet") }
+        _ = try archive.extract(sheetEntry) { sheetXML.append($0) }
+        let xml = String(decoding: sheetXML, as: UTF8.self)
+        XCTAssertTrue(xml.contains("<v>10.00</v>"))
+        XCTAssertTrue(xml.contains("<v>2.50</v>"))
+        XCTAssertTrue(xml.contains("s=\"1\""))
+        XCTAssertTrue(xml.contains("ySplit=\"1\""))
+        var styles = Data()
+        guard let stylesEntry = archive["xl/styles.xml"] else { return XCTFail("Missing styles") }
+        _ = try archive.extract(stylesEntry) { styles.append($0) }
+        XCTAssertTrue(String(decoding: styles, as: UTF8.self).contains("formatCode=\"0.00\""))
+        let emptyURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".xlsx")
+        defer { try? FileManager.default.removeItem(at: emptyURL) }
+        try Exports.allTransactions(Workspace()).write(to: emptyURL)
+        XCTAssertEqual(try InvoiceReader.sheets(url: emptyURL)[0].rows.count, 1)
     }
 }

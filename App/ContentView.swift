@@ -45,9 +45,10 @@ struct ContentView: View {
                 ToolbarItemGroup {
                     Button { store.openPDFs() } label: { Label("Import Statements", systemImage: "square.and.arrow.down") }.disabled(store.showPDFImport)
                     Menu {
-                        Button("Statement to Excel…") { store.exportStatementExcel() }.disabled(store.selectedStatement == nil)
+                        Button("This statement to Excel…") { store.exportStatementExcel() }.disabled(store.selectedStatement == nil)
+                        Button("All transactions to Excel…") { store.exportAllTransactionsExcel() }
                         Divider()
-                        Button("Transactions") { store.export("transactions") }
+                        Button("Reviewed transactions (CSV)") { store.export("transactions") }
                         Button("Invoice balances") { store.export("invoices") }
                         Button("Payment allocations") { store.export("allocations") }
                     } label: { Label("Export", systemImage: "square.and.arrow.up") }
@@ -165,7 +166,8 @@ struct StatementDetail: View {
                     HStack {
                         Text("\(entries.count) transactions").font(.headline)
                         Spacer()
-                        Button("Export Excel…") { store.exportStatementExcel(statementID: statement.id) }
+                        Button("Export all to Excel…") { store.exportStatementExcel(statementID: statement.id) }
+                            .help("Excel workbook of every transaction on this statement, including rows that still need review.")
                         Toggle("Show PDF", isOn: $showPDF).toggleStyle(.checkbox)
                         Button("Add row") { store.newEntry(statement: statement) }
                     }
@@ -215,7 +217,7 @@ struct TransactionsView: View {
     } }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { TextField("Search descriptions, clients, references…", text: $search).textFieldStyle(.roundedBorder); Toggle("Needs review", isOn: $onlyReview).toggleStyle(.checkbox); Button("Apply rules") { store.applyRulesInBackground() }.disabled(store.busy) }
+            HStack { TextField("Search descriptions, clients, references…", text: $search).textFieldStyle(.roundedBorder); Toggle("Needs review", isOn: $onlyReview).toggleStyle(.checkbox); Button("Export Excel…") { store.exportAllTransactionsExcel() }.help("Excel workbook of every transaction from every statement, including rows that still need review."); Button("Apply rules") { store.applyRulesInBackground() }.disabled(store.busy) }
             HStack {
                 Picker("Direction", selection: $direction) { Text("All").tag(RuleDirection.any); Text("Credits / money in").tag(RuleDirection.incoming); Text("Debits / money out").tag(RuleDirection.outgoing) }.frame(width: 270)
                 Picker("Sort by", selection: $sort) { ForEach(["Date", "Type", "Category"], id: \.self) { Text($0) } }.frame(width: 200)
