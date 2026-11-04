@@ -4,54 +4,26 @@ import PDFKit
 
 struct ContentView: View {
     @Bindable var store: AppStore
+    /// Shared between both layouts so hiding the sidebar sticks when switching sections.
+    @State private var columns: NavigationSplitViewVisibility = .all
+    /// Statements use Apple's standard three-column layout (sidebar → statement list → statement);
+    /// the other sections, and the empty Statements screen, use two columns.
+    private var showsStatementColumns: Bool { store.section == .statements && !store.workspace.statements.isEmpty }
     var body: some View {
-        NavigationSplitView {
-            VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Label("Statement Manager", systemImage: "building.columns.fill").font(.headline)
-                    Text(store.workspace.businessName.isEmpty ? "Your local financial workspace" : store.workspace.businessName).font(.caption).foregroundStyle(.secondary)
-                }.padding(18)
-                List(Section.allCases, selection: $store.section) { item in Label(item.rawValue, systemImage: item.icon).tag(item) }
-                VStack(alignment: .leading, spacing: 8) {
-                    Label(store.ai.enabled ? "Local storage · AI enabled" : "Local processing · AI off", systemImage: "lock.shield").font(.caption).foregroundStyle(.secondary)
-                    Text("HKD · HSBC & Bank of China").font(.caption2).foregroundStyle(.secondary)
-                    Button("Workspace Settings…") { store.showSettings = true }.buttonStyle(.plain).font(.caption)
-                    Button("AI Settings…") { store.showAISettings = true }.buttonStyle(.plain).font(.caption)
-                }.padding(18)
-            }.navigationSplitViewColumnWidth(min: 220, ideal: 245)
-        } detail: {
-            VStack(spacing: 0) {
-                if let notice = store.notice {
-                    HStack { Image(systemName: "checkmark.circle"); Text(notice); Spacer(); Button { store.notice = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain) }.font(.callout).padding(12).background(.green.opacity(0.08))
+        Group {
+            if showsStatementColumns {
+                NavigationSplitView(columnVisibility: $columns) {
+                    sidebar
+                } content: {
+                    StatementsView(store: store).navigationSplitViewColumnWidth(min: 250, ideal: 280, max: 360)
+                } detail: {
+                    detailColumn { StatementDetailColumn(store: store) }
                 }
-                switch store.section {
-                case .statements: StatementsView(store: store)
-                case .transactions: TransactionsView(store: store)
-                case .invoices: InvoicesView(store: store)
-                case .rules: RulesView(store: store)
-                case .reports: ReportsView(store: store)
-                }
-            }
-            .navigationTitle(store.section.rawValue)
-            .overlay {
-                if store.busy {
-                    ZStack {
-                        Color.black.opacity(0.06)
-                        ProgressView("Working…").padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-                    }.ignoresSafeArea()
-                }
-            }
-            .toolbar {
-                ToolbarItemGroup {
-                    Button { store.openPDFs() } label: { Label("Import Statements", systemImage: "square.and.arrow.down") }.disabled(store.showPDFImport)
-                    Menu {
-                        Button("This statement to Excel…") { store.exportStatementExcel() }.disabled(store.selectedStatement == nil)
-                        Button("All transactions to Excel…") { store.exportAllTransactionsExcel() }
-                        Divider()
-                        Button("Reviewed transactions (CSV)") { store.export("transactions") }
-                        Button("Invoice balances") { store.export("invoices") }
-                        Button("Payment allocations") { store.export("allocations") }
-                    } label: { Label("Export", systemImage: "square.and.arrow.up") }
+            } else {
+                NavigationSplitView(columnVisibility: $columns) {
+                    sidebar
+                } detail: {
+                    detailColumn { sectionView }
                 }
             }
         }
@@ -64,6 +36,61 @@ struct ContentView: View {
         .sheet(isPresented: $store.showInvoiceImport) { if let url = store.invoiceURL { InvoiceImportView(store: store, url: url) } }
         .sheet(item: $store.editingEntry) { entry in EntryEditor(store: store, original: entry) }
         .alert("Unable to complete action", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) { Button("OK") { store.error = nil } } message: { Text(store.error ?? "") }
+    }
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Statement Manager", systemImage: "building.columns.fill").font(.headline)
+                Text(store.workspace.businessName.isEmpty ? "Your local financial workspace" : store.workspace.businessName).font(.caption).foregroundStyle(.secondary)
+            }.padding(18)
+            List(Section.allCases, selection: $store.section) { item in Label(item.rawValue, systemImage: item.icon).tag(item) }
+            VStack(alignment: .leading, spacing: 8) {
+                Label(store.ai.enabled ? "Local storage · AI enabled" : "Local processing · AI off", systemImage: "lock.shield").font(.caption).foregroundStyle(.secondary)
+                Text("HKD · HSBC & Bank of China").font(.caption2).foregroundStyle(.secondary)
+                Button("Workspace Settings…") { store.showSettings = true }.buttonStyle(.plain).font(.caption)
+                Button("AI Settings…") { store.showAISettings = true }.buttonStyle(.plain).font(.caption)
+            }.padding(18)
+        }.navigationSplitViewColumnWidth(min: 220, ideal: 245)
+    }
+    @ViewBuilder private var sectionView: some View {
+        switch store.section {
+        case .statements: StatementsEmptyView(store: store)
+        case .transactions: TransactionsView(store: store)
+        case .invoices: InvoicesView(store: store)
+        case .rules: RulesView(store: store)
+        case .reports: ReportsView(store: store)
+        }
+    }
+    /// The notice banner, title, busy overlay and toolbar shared by every section's detail column.
+    private func detailColumn<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        VStack(spacing: 0) {
+            if let notice = store.notice {
+                HStack { Image(systemName: "checkmark.circle"); Text(notice); Spacer(); Button { store.notice = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain) }.font(.callout).padding(12).background(.green.opacity(0.08))
+            }
+            content()
+        }
+        .navigationTitle(store.section.rawValue)
+        .overlay {
+            if store.busy {
+                ZStack {
+                    Color.black.opacity(0.06)
+                    ProgressView("Working…").padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }.ignoresSafeArea()
+            }
+        }
+        .toolbar {
+            ToolbarItemGroup {
+                Button { store.openPDFs() } label: { Label("Import Statements", systemImage: "square.and.arrow.down") }.disabled(store.showPDFImport)
+                Menu {
+                    Button("This statement to Excel…") { store.exportStatementExcel() }.disabled(store.selectedStatement == nil)
+                    Button("All transactions to Excel…") { store.exportAllTransactionsExcel() }
+                    Divider()
+                    Button("Reviewed transactions (CSV)") { store.export("transactions") }
+                    Button("Invoice balances") { store.export("invoices") }
+                    Button("Payment allocations") { store.export("allocations") }
+                } label: { Label("Export", systemImage: "square.and.arrow.up") }
+            }
+        }
     }
 }
 struct WorkspaceSettings: View {
@@ -113,26 +140,35 @@ struct WorkspaceSettings: View {
         .sheet(isPresented: $showAISettings) { AISettingsView(settings: store.ai) }
     }
 }
+struct StatementsEmptyView: View {
+    @Bindable var store: AppStore
+    var body: some View {
+        ContentUnavailableView { Label("Your statements, organized", systemImage: "doc.text") } description: { Text("Import searchable HSBC or Bank of China PDFs. Bank statements and credit card statements stay in separate folders.") } actions: { Button("Import Statements…") { store.openPDFs() }.buttonStyle(.borderedProminent) }
+    }
+}
+/// Detail column of the Statements layout: the selected statement, or a prompt to pick one.
+struct StatementDetailColumn: View {
+    @Bindable var store: AppStore
+    var body: some View {
+        if let selected = store.workspace.statements.first(where: { $0.id == store.selectedStatement }) {
+            StatementDetail(store: store, statement: selected).id(selected.id)
+        } else {
+            ContentUnavailableView("Select a statement", systemImage: "doc.text.magnifyingglass")
+        }
+    }
+}
 struct StatementsView: View {
     @Bindable var store: AppStore
     /// Account folders the user collapsed; everything starts expanded.
     @State private var collapsed: Set<UUID> = []
-    var selected: Statement? { store.workspace.statements.first { $0.id == store.selectedStatement } }
+    /// Middle column of the Statements layout: one folder per bank account or card.
     var body: some View {
-        if store.workspace.statements.isEmpty {
-            ContentUnavailableView { Label("Your statements, organized", systemImage: "doc.text") } description: { Text("Import searchable HSBC or Bank of China PDFs. Bank statements and credit card statements stay in separate folders.") } actions: { Button("Import Statements…") { store.openPDFs() }.buttonStyle(.borderedProminent) }
-        } else {
-            HSplitView {
-                List(selection: $store.selectedStatement) {
-                    ForEach(StatementFolder.allCases) { folder in folderSection(folder) }
-                }.frame(minWidth: 250, idealWidth: 280, maxWidth: 320)
-                // Open the account folder of a newly selected statement (e.g. right after an import).
-                .onChange(of: store.selectedStatement) { _, id in
-                    if let id, let account = store.workspace.statements.first(where: { $0.id == id })?.accountID { collapsed.remove(account) }
-                }
-                if let selected { StatementDetail(store: store, statement: selected).id(selected.id) }
-                else { ContentUnavailableView("Select a statement", systemImage: "doc.text.magnifyingglass") }
-            }
+        List(selection: $store.selectedStatement) {
+            ForEach(StatementFolder.allCases) { folder in folderSection(folder) }
+        }
+        // Open the account folder of a newly selected statement (e.g. right after an import).
+        .onChange(of: store.selectedStatement) { _, id in
+            if let id, let account = store.workspace.statements.first(where: { $0.id == id })?.accountID { collapsed.remove(account) }
         }
     }
     // The sidebar is split into small helpers so the compiler can type-check it quickly.
