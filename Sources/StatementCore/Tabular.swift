@@ -245,6 +245,42 @@ public enum Exports {
         }
         return try XLSX.write(workbookRows(w, entries: entries, includeStatementDate: true), decimalColumns: [3], integerColumns: [13])
     }
+    /// Every transaction of one account, reviewed or not, in transaction-date order.
+    public static func allTransactions(_ w: Workspace, accountID: UUID) throws -> Data {
+        guard let account = w.account(accountID) else { throw LedgerError.invalid("Account not found.") }
+        let filename = Dictionary(w.statements.map { ($0.id, $0.filename) }, uniquingKeysWith: { a, _ in a })
+        let entries = w.entries.filter { $0.accountID == accountID }.sorted { lhs, rhs in
+            if lhs.date != rhs.date { return lhs.date < rhs.date }
+            let leftName = filename[lhs.statementID] ?? "", rightName = filename[rhs.statementID] ?? ""
+            if leftName != rightName { return leftName < rightName }
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+        return try XLSX.write(workbookRows(w, entries: entries, includeStatementDate: true), sheetName: safeSheetName(account.name), decimalColumns: [3], integerColumns: [13])
+    }
+    /// Excel forbids : \ / ? * [ ] in sheet names and limits them to 31 characters.
+    static func safeSheetName(_ name: String) -> String {
+        let cleaned = String(name.map { ":\\/?*[]".contains($0) ? "-" : $0 }).trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? "Transactions" : String(cleaned.prefix(31))
+    }
+    /// A Finder-safe, unique folder name for each account, so every account exports into its own folder.
+    /// Accounts of different kinds live under different parent folders, so names only need to be unique per kind.
+    public static func accountFolderNames(_ w: Workspace) -> [UUID: String] {
+        var result: [UUID: String] = [:]
+        for folder in StatementFolder.allCases {
+            var used = Set<String>()
+            for account in w.accounts(in: folder) {
+                var base = String(account.name.map { "/:\\".contains($0) || $0.isNewline || $0 == "\t" ? "-" : $0 })
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                while base.hasPrefix(".") { base.removeFirst() }
+                base = String(base.prefix(80)).trimmingCharacters(in: .whitespaces)
+                if base.isEmpty { base = "Account" }
+                var name = base, n = 2
+                while used.contains(name.lowercased()) { name = "\(base) (\(n))"; n += 1 }
+                used.insert(name.lowercased()); result[account.id] = name
+            }
+        }
+        return result
+    }
     public static func suggestedStatementFilename(_ statement: Statement) -> String {
         let base = (statement.filename as NSString).deletingPathExtension
         let suffix = statement.periodEnd.isEmpty ? Day.today : statement.periodEnd

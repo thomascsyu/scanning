@@ -115,6 +115,8 @@ struct WorkspaceSettings: View {
 }
 struct StatementsView: View {
     @Bindable var store: AppStore
+    /// Account folders the user collapsed; everything starts expanded.
+    @State private var collapsed: Set<UUID> = []
     var selected: Statement? { store.workspace.statements.first { $0.id == store.selectedStatement } }
     var body: some View {
         if store.workspace.statements.isEmpty {
@@ -123,24 +125,43 @@ struct StatementsView: View {
             HSplitView {
                 List(selection: $store.selectedStatement) {
                     ForEach(StatementFolder.allCases) { folder in
-                        Section {
-                            let items = store.workspace.statements(in: folder)
-                            if items.isEmpty { Text("No statements yet").font(.caption).foregroundStyle(.secondary) }
-                            ForEach(items) { statement in statementRow(statement).tag(statement.id) }
+                        SwiftUI.Section {
+                            let accounts = store.workspace.accounts(in: folder)
+                            if accounts.isEmpty { Text("No accounts yet").font(.caption).foregroundStyle(.secondary) }
+                            // One sub-folder per account, so each bank account and card keeps its own statements.
+                            ForEach(accounts) { account in
+                                let items = store.workspace.statements(forAccount: account.id)
+                                DisclosureGroup(isExpanded: expansion(account.id)) {
+                                    if items.isEmpty { Text("No statements yet").font(.caption).foregroundStyle(.secondary) }
+                                    ForEach(items) { statement in statementRow(statement).tag(statement.id) }
+                                } label: {
+                                    HStack {
+                                        Label(account.name, systemImage: "folder")
+                                        Spacer()
+                                        Text("\(items.count)").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                                    }.help("\(account.bank.rawValue) · \(account.kind.rawValue)")
+                                }
+                            }
                         } header: {
                             Label(folder.rawValue, systemImage: folder == .bank ? "building.columns" : "creditcard")
                         }
                     }
                 }.frame(minWidth: 250, idealWidth: 280, maxWidth: 320)
+                // Open the account folder of a newly selected statement (e.g. right after an import).
+                .onChange(of: store.selectedStatement) { _, id in
+                    if let id, let account = store.workspace.statements.first(where: { $0.id == id })?.accountID { collapsed.remove(account) }
+                }
                 if let selected { StatementDetail(store: store, statement: selected).id(selected.id) }
                 else { ContentUnavailableView("Select a statement", systemImage: "doc.text.magnifyingglass") }
             }
         }
     }
+    private func expansion(_ id: UUID) -> Binding<Bool> {
+        Binding(get: { !collapsed.contains(id) }, set: { expanded in if expanded { collapsed.remove(id) } else { collapsed.insert(id) } })
+    }
     private func statementRow(_ statement: Statement) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(statement.filename).font(.headline).lineLimit(2)
-            Text(store.workspace.account(statement.accountID)?.name ?? "").font(.caption).foregroundStyle(.secondary)
             HStack { Text(statement.periodEnd); Spacer(); Label(statement.reconciled ? "Reconciled" : "Review", systemImage: statement.reconciled ? "checkmark.circle.fill" : "circle.dashed").foregroundStyle(statement.reconciled ? .green : .orange) }.font(.caption)
         }.padding(.vertical, 6)
     }
@@ -239,7 +260,7 @@ struct TransactionsView: View {
     } }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { TextField("Search descriptions, clients, references…", text: $search).textFieldStyle(.roundedBorder); Toggle("Needs review", isOn: $onlyReview).toggleStyle(.checkbox); Button("Export Excel…") { store.exportAllTransactionsExcel() }.help("Writes bank and credit card transactions into separate Excel folders, including rows that still need review."); Button("Apply rules") { store.applyRulesInBackground() }.disabled(store.busy) }
+            HStack { TextField("Search descriptions, clients, references…", text: $search).textFieldStyle(.roundedBorder); Toggle("Needs review", isOn: $onlyReview).toggleStyle(.checkbox); Button("Export Excel…") { store.exportAllTransactionsExcel() }.help("Writes one Excel workbook per account, in its own folder under Bank statements or Credit card statements, including rows that still need review."); Button("Apply rules") { store.applyRulesInBackground() }.disabled(store.busy) }
             HStack {
                 Picker("Direction", selection: $direction) { Text("All").tag(RuleDirection.any); Text("Credits / money in").tag(RuleDirection.incoming); Text("Debits / money out").tag(RuleDirection.outgoing) }.frame(width: 270)
                 Picker("Sort by", selection: $sort) { ForEach(["Date", "Type", "Category"], id: \.self) { Text($0) } }.frame(width: 200)
