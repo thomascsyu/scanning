@@ -75,3 +75,9 @@ These changes were made in a Linux environment without the macOS SDK, so neither
 - Workspace validation is indexed (linear time) and date validation reuses a formatter. The activity log keeps the latest 5,000 records and each transaction keeps its latest 20 corrections.
 - 11 new synthetic regression tests in `StatementCoreTests.swift`.
 
+## Version 0.6: one folder per account (not yet built or tested on a Mac)
+
+- The statement list groups each folder (Bank statements / Credit card statements) into a collapsible sub-folder per account, with a statement count. Selecting or importing a statement opens its account's folder.
+- **All transactions to Excel** writes `<destination>/<Bank statements|Credit card statements>/<account>/all-transactions-<date>.xlsx`, one workbook per account; the worksheet is named after the account. Folder names replace `/ : \\`, drop leading dots, and get a ` (2)` suffix when two accounts of the same kind would share a name (case-insensitively).
+- One new synthetic test in `SpreadsheetTests.swift`. Run `./scripts/test.sh` and the Release build on the Mac before installing.
+

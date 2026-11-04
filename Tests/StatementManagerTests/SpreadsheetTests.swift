@@ -145,4 +145,31 @@ final class SpreadsheetTests: XCTestCase {
         try Exports.allTransactions(Workspace(), folder: .creditCard).write(to: emptyURL)
         XCTAssertEqual(try InvoiceReader.sheets(url: emptyURL)[0].rows.count, 1)
     }
+
+    func testEachAccountExportsToItsOwnFolderAndWorkbook() throws {
+        let hsbc = Account(name: "HSBC operating", bank: .hsbc, kind: .bank), boc = Account(name: "BOC: savings/HKD", bank: .boc, kind: .bank)
+        let twin = Account(name: "hsbc operating", bank: .hsbc, kind: .bank), card = Account(name: "HSBC operating", bank: .hsbc, kind: .creditCard)
+        var w = Workspace(); w.accounts = [hsbc, boc, twin, card]
+        let names = Exports.accountFolderNames(w)
+        XCTAssertEqual(names[hsbc.id], "HSBC operating")
+        XCTAssertEqual(names[boc.id], "BOC- savings-HKD")
+        XCTAssertEqual(names[twin.id], "hsbc operating (2)") // case-insensitive file systems would merge these folders
+        XCTAssertEqual(names[card.id], "HSBC operating")     // a different parent folder, so no clash
+        XCTAssertEqual(w.accounts(in: .bank).map(\.id), [hsbc.id, boc.id, twin.id])
+        XCTAssertEqual(w.accounts(in: .creditCard).map(\.id), [card.id])
+        let a = Statement(accountID: hsbc.id, filename: "a.pdf", storedFilename: "a.pdf", hash: "a"), b = Statement(accountID: boc.id, filename: "b.pdf", storedFilename: "b.pdf", hash: "b")
+        w.statements = [a, b]
+        w.entries = [Entry(statementID: a.id, accountID: hsbc.id, date: "2026-01-02", amount: 100, description: "A"),
+                     Entry(statementID: b.id, accountID: boc.id, date: "2026-01-01", amount: 200, description: "B")]
+        XCTAssertEqual(w.statements(forAccount: hsbc.id).map(\.id), [a.id])
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".xlsx")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Exports.allTransactions(w, accountID: boc.id).write(to: url)
+        let sheet = try InvoiceReader.sheets(url: url)[0]
+        XCTAssertEqual(sheet.name, "BOC- savings-HKD")
+        XCTAssertEqual(sheet.rows.count, 2); XCTAssertEqual(sheet.rows[1][0], "BOC: savings/HKD"); XCTAssertEqual(sheet.rows[1][3], "2.00")
+        XCTAssertThrowsError(try Exports.allTransactions(w, accountID: UUID()))
+        var hidden = Workspace(); let dotted = Account(name: "..", bank: .hsbc, kind: .bank); hidden.accounts = [dotted]
+        XCTAssertEqual(Exports.accountFolderNames(hidden)[dotted.id], "Account")
+    }
 }

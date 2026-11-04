@@ -181,6 +181,12 @@ public struct Workspace: Codable, Equatable, Sendable {
     public func entries(in folder: StatementFolder) -> [Entry] {
         entries.filter { account($0.accountID)?.kind == folder.kind }
     }
+    /// Accounts filed under a folder, in the order they were added.
+    public func accounts(in folder: StatementFolder) -> [Account] { accounts.filter { $0.kind == folder.kind } }
+    /// One account's statements, newest import first.
+    public func statements(forAccount id: UUID) -> [Statement] {
+        statements.filter { $0.accountID == id }.sorted { $0.importedAt > $1.importedAt }
+    }
     public func outstanding(_ invoice: Invoice) -> Int64 { invoice.startingOutstanding - allocations.filter { $0.invoiceID == invoice.id }.reduce(0) { $0 + $1.amount } }
     public func allocated(_ entryID: UUID) -> Int64 { allocations.filter { $0.entryID == entryID }.reduce(0) { $0 + $1.amount } }
     public func incoming(_ entry: Entry) -> Int64 { account(entry.accountID)?.kind == .creditCard ? -entry.amount : entry.amount }

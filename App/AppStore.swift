@@ -116,21 +116,24 @@ import StatementCore
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
         panel.prompt = "Export"
-        panel.message = "Bank statements and credit card statements are written into separate folders."
+        panel.message = "Each bank account and credit card gets its own folder, inside Bank statements or Credit card statements."
         guard panel.runModal() == .OK, let root = panel.url else { return }
         do {
-            var notes: [String] = []
+            let names = Exports.accountFolderNames(workspace)
+            var accountsExported = 0, rows = 0
             for folder in StatementFolder.allCases {
-                let count = workspace.entries(in: folder).count
-                guard count > 0 else { continue }
-                let directory = root.appendingPathComponent(folder.rawValue, isDirectory: true)
-                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                // Never overwrite an earlier export from the same day.
-                let file = Self.uniqueFile(in: directory, filename: Exports.suggestedAllTransactionsFilename())
-                try Exports.allTransactions(workspace, folder: folder).write(to: file)
-                notes.append("\(count) \(folder == .bank ? "bank" : "credit card")")
+                for account in workspace.accounts(in: folder) {
+                    let count = workspace.entries.filter { $0.accountID == account.id }.count
+                    guard count > 0, let name = names[account.id] else { continue }
+                    let directory = root.appendingPathComponent(folder.rawValue, isDirectory: true).appendingPathComponent(name, isDirectory: true)
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                    // Never overwrite an earlier export from the same day.
+                    let file = Self.uniqueFile(in: directory, filename: Exports.suggestedAllTransactionsFilename())
+                    try Exports.allTransactions(workspace, accountID: account.id).write(to: file)
+                    accountsExported += 1; rows += count
+                }
             }
-            notice = notes.isEmpty ? "No transactions to export." : "Exported \(notes.joined(separator: " and ")) transactions into separate folders."
+            notice = accountsExported == 0 ? "No transactions to export." : "Exported \(rows) transactions into \(accountsExported) account folder\(accountsExported == 1 ? "" : "s")."
         } catch { self.error = error.localizedDescription }
     }
     static func uniqueFile(in directory: URL, filename: String) -> URL {
