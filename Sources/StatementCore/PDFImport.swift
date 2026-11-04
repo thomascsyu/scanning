@@ -74,7 +74,7 @@ public struct ParseResult: Sendable {
 public enum StatementParser {
     // These profiles are intentionally unvalidated until checked against the user's real layouts.
     /// Recorded on each statement so later parser changes can identify which imports to re-extract.
-    public static let version = "0.3-hsbc-layout"
+    public static let version = "0.4-hsbc-card"
     public static func parse(_ pdf: ExtractedPDF, statementID: UUID, account: Account, periodEnd: String) -> ParseResult {
         let profile = "\(pdf.bank.rawValue) · \(account.kind.rawValue) · unvalidated"
         var warnings = pdf.warnings + ["Bank layout is unvalidated. Review every row and reconcile balances before finalizing."]
@@ -93,13 +93,21 @@ public enum StatementParser {
             let rect = group.dropFirst().reduce(group[0].region.rect) { $0.union($1.region.rect) }
             return (sorted.map(\.text).joined(separator: " "), SourceRegion(page: group[0].region.page, rect: rect), group.contains(where: \.ocr), sorted)
         }
+        // Card statements (HSBC) print a post date and a transaction date side by side, written without a space ("03MAR 02MAR").
+        let isCard: Bool = account.kind == .creditCard
+        let dayMonthGap: String = isCard ? #"\s*"# : #"\s+"#
+        let secondDate: String = isCard ? #"(?:\s+(\d{1,2}\s*[A-Za-z]{3}))?"# : ""
+        var datePattern: String = #"^\s*(\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}(?:/\d{4})?|\d{1,2}-[A-Za-z]{3}(?:-\d{4})?|\d{1,2}"#
+        datePattern += dayMonthGap + #"[A-Za-z]{3}(?:\s+\d{4})?)"# + secondDate + #"\b"#
         guard let moneyRegex = try? NSRegularExpression(pattern: #"(?:HK\$\s*)?\(?-?\d[\d,]*\.\d{2}(?![\d%])\)?(?:\s*(?:CR|DR))?"#, options: [.caseInsensitive]),
-              let dateRegex = try? NSRegularExpression(pattern: #"^\s*(\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}(?:/\d{4})?|\d{1,2}-[A-Za-z]{3}(?:-\d{4})?|\d{1,2}\s+[A-Za-z]{3}(?:\s+\d{4})?)\b"#) else {
+              let dateRegex = try? NSRegularExpression(pattern: datePattern),
+              let cardNumberRegex = try? NSRegularExpression(pattern: #"^\s*\d{4}\s\d{4}\s\d{4}\s\d{4}\b"#) else {
             warnings.append("Could not initialize the statement parser.")
             return ParseResult(entries: [], warnings: warnings, profile: profile)
         }
         let openingPhrases = ["opening balance", "previous balance", "balance brought", "b/f balance", "承前結餘", "上期結欠"]
-        let closingPhrases = ["closing balance", "new balance", "balance carried", "c/f balance", "本期結欠", "期末結餘"]
+        let closingPhrases: [String] = ["closing balance", "new balance", "balance carried", "c/f balance", "本期結欠", "期末結餘"]
+            + (account.kind == .creditCard ? ["statement balance", "結單結欠餘額"] : [])
         var entries: [Entry] = [], skipped = 0, inherited = 0, ignored = 0
         var debitX: Double?, creditX: Double?, balanceX: Double?
         var openingBalance: Int64?, closingBalance: Int64?
@@ -115,7 +123,8 @@ public enum StatementParser {
             guard !monetary.isEmpty else { return nil }
             var amount: Int64?, runningBalance: Int64?
             var firstAmountColumnX: Double?
-            if account.kind == .creditCard && monetary.count == 1 { amount = try? Money.parse(ns.substring(with: monetary[0].range)) }
+            // The card amount (HKD) is the rightmost figure; a foreign-currency amount may precede it ("USD 59.00 467.97").
+            if account.kind == .creditCard, let last = monetary.last { amount = try? Money.parse(ns.substring(with: last.range)) }
             if account.kind == .bank, let debitX, let creditX {
                 let anchors = [(debitX, -1), (creditX, 1)] + (balanceX.map { [($0, 0)] } ?? [])
                 let xs = anchors.map(\.0).sorted()
@@ -137,7 +146,7 @@ public enum StatementParser {
                 if token.hasSuffix("DR"), let value = try? Money.parse(token) { amount = -abs(value) }
             }
             guard let amount else { return nil }
-            let amountStart = max(monetary[0].range.location, prefixLength)
+            let amountStart = max((account.kind == .creditCard ? monetary.last! : monetary[0]).range.location, prefixLength)
             let description: String
             if let firstAmountColumnX {
                 // Preserve numbers/references inside details; only actual amount columns end the description.
@@ -199,6 +208,11 @@ public enum StatementParser {
                     debitX = debit ?? debitX; creditX = credit ?? creditX; balanceX = balance ?? balanceX
                 }
             }
+            if dateMatch == nil, account.kind == .creditCard,
+               cardNumberRegex.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) != nil {
+                // A card-number/cardholder heading separates the transactions of each card; it is not a detail line.
+                continuationAllowed = false; continue
+            }
             if dateMatch == nil {
                 // Page furniture repeats at every page break; the running day continues past it.
                 if ["statement", "page "].contains(where: lower.contains) { continuationAllowed = false; pending = nil; continue }
@@ -230,7 +244,9 @@ public enum StatementParser {
                 continue
             }
             continuationAllowed = false; pending = nil
-            guard let date = transactionDate(ns.substring(with: dm.range(at: 1)), end: periodEnd) else { lastDate = nil; skipped += 1; continue }
+            // On card statements with post and transaction dates, the transaction date is the one recorded.
+            let dateGroup = dm.numberOfRanges > 2 && dm.range(at: 2).location != NSNotFound ? 2 : 1
+            guard let date = transactionDate(ns.substring(with: dm.range(at: dateGroup)), end: periodEnd) else { lastDate = nil; skipped += 1; continue }
             guard moneyRegex.firstMatch(in: text, range: NSRange(location: dm.range.length, length: ns.length - dm.range.length)) != nil else {
                 // A bare date (e.g. the statement-date box atop each page) is not a transaction. A dated details line
                 // without an amount starts a new day whose amount follows on the next line.
@@ -240,6 +256,8 @@ public enum StatementParser {
             }
             lastDate = date; carriedDate = nil
             guard let entry = makeEntry(text, region: region, ocr: ocr, cells: cells, date: date, prefixLength: dm.range.length) else { skipped += 1; continue }
+            // Statement-date / balance boxes ("28 MAR 2025  HKD14,717.14") have a date and an amount but no merchant.
+            if account.kind == .creditCard, !hasMerchantText(entry.rawDescription) { continue }
             entries.append(entry); continuationAllowed = true
         }
         for i in entries.indices { entries[i].extractReferences() }
@@ -249,7 +267,13 @@ public enum StatementParser {
         if entries.isEmpty { warnings.append("No reliable transaction rows found. Enter rows manually; this layout needs a sample-based parsing profile.") }
         return ParseResult(entries: entries, warnings: warnings, profile: profile, openingBalance: openingBalance, closingBalance: closingBalance)
     }
+    static func hasMerchantText(_ description: String) -> Bool {
+        let stripped = description.uppercased().replacingOccurrences(of: #"HK\$|\b(HKD|USD|CNY|RMB)\b"#, with: "", options: .regularExpression)
+        return stripped.unicodeScalars.contains { CharacterSet.letters.contains($0) }
+    }
     public static func transactionDate(_ text: String, end: String) -> String? {
+        // "03MAR" / "28 MAR 2025" → "03 Mar" / "28 Mar 2025" so the day-month formats parse.
+        let text = text.replacingOccurrences(of: #"^(\d{1,2})([A-Za-z]{3})"#, with: "$1 $2", options: .regularExpression).capitalized
         if let date = try? Day.parse(text) { return date }
         guard let year = Int(end.prefix(4)) else { return nil }
         let separator = text.contains("/") ? "/" : text.contains("-") ? "-" : " "
