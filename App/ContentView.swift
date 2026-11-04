@@ -285,9 +285,15 @@ struct StatementDetail: View {
     @State private var opening = ""
     @State private var closing = ""
     @State private var showPDF = true
-    @State private var pdfLocked = false
+    @State private var pdfLocked: Bool
     @State private var unlockPassword = ""
     @State private var unlockMessage: String?
+    init(store: AppStore, statement: Statement) {
+        self.store = store
+        self.statement = statement
+        // Decide before the first layout, so the detail does not change shape right after it appears.
+        _pdfLocked = State(initialValue: PDFDocument(url: store.pdfURL(statement))?.isLocked ?? false)
+    }
     var entries: [Entry] { store.workspace.entries.filter { $0.statementID == statement.id } }
     var selectedEntry: Entry? { entries.first { $0.id == store.selectedStatementEntry } }
     var body: some View {
@@ -303,7 +309,7 @@ struct StatementDetail: View {
                 Spacer()
                 if let difference = store.workspace.reconciliationDifference(statement) { Text(difference == 0 ? "Balanced" : "Difference: \(Money.display(difference))").font(.caption.bold()).foregroundStyle(difference == 0 ? .green : .orange) }
             }
-            Text(store.workspace.account(statement.accountID)?.kind == .creditCard ? "Card amounts: charges are positive; repayments and credits are negative. Balances represent the amount owed." : "Bank amounts: money received is positive; money paid is negative.").font(.caption).foregroundStyle(.secondary)
+            Text(store.workspace.account(statement.accountID)?.kind == .creditCard ? "Card amounts: charges are positive; repayments and credits are negative. Balances represent the amount owed." : "Bank amounts: money received is positive; money paid is negative.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HSplitView {
                 VStack(alignment: .leading) {
                     HStack {
@@ -323,14 +329,17 @@ struct StatementDetail: View {
                     VStack(alignment: .leading, spacing: 6) {
                         if pdfLocked && store.pdfPasswords[statement.hash] == nil {
                             // The preserved original stays protected; the password is held in memory for this session only.
+                            // A locked PDF is never handed to PDFView: it has no page to fit and kept re-running layout.
                             HStack { SecureField("PDF password to show the preview", text: $unlockPassword).onSubmit { unlockPreview() }; Button("Unlock") { unlockPreview() }.disabled(unlockPassword.isEmpty) }
                             if let unlockMessage { Text(unlockMessage).font(.caption).foregroundStyle(.red) }
+                            ContentUnavailableView("PDF is password protected", systemImage: "lock.doc", description: Text("Enter the PDF password to show the preview."))
+                        } else {
+                            PDFPreview(url: store.pdfURL(statement), region: selectedEntry?.source, password: store.pdfPasswords[statement.hash])
                         }
-                        PDFPreview(url: store.pdfURL(statement), region: selectedEntry?.source, password: store.pdfPasswords[statement.hash])
                     }.frame(minWidth: 240)
                 }
             }
-        }.padding(16).onAppear { refreshBalances(); pdfLocked = PDFDocument(url: store.pdfURL(statement))?.isLocked ?? false }
+        }.padding(16).onAppear { refreshBalances() }
         .onChange(of: statement.openingBalance) { _, _ in refreshBalances() }
         .onChange(of: statement.closingBalance) { _, _ in refreshBalances() }
     }
@@ -430,9 +439,11 @@ final class PDFHostView: NSView {
 
     /// Fit the current page after the enclosing layout pass. Returns false when there is nothing to fit yet.
     @discardableResult func fitToBounds() -> Bool {
-        guard bounds.width > 1, bounds.height > 1, let page = pdfView.currentPage ?? pdfView.document?.page(at: 0) else { return false }
+        guard bounds.width > 1, bounds.height > 1 else { return false }
+        // Nothing to fit yet: remember this size so layout() does not reschedule a fit on every pass.
+        guard let page = pdfView.currentPage ?? pdfView.document?.page(at: 0) else { fittedSize = bounds.size; return false }
         let pageSize = page.bounds(for: pdfView.displayBox).size
-        guard pageSize.width > 0, pageSize.height > 0 else { return false }
+        guard pageSize.width > 0, pageSize.height > 0 else { fittedSize = bounds.size; return false }
         let factor = min(pdfView.maxScaleFactor, max(pdfView.minScaleFactor, min(bounds.width / pageSize.width, bounds.height / pageSize.height)))
         fittedSize = bounds.size
         if abs(pdfView.scaleFactor - factor) > 0.01 { pdfView.scaleFactor = factor }
@@ -492,7 +503,8 @@ struct PDFPreview: NSViewRepresentable {
                 coordinator.page = nil
                 let document = PDFDocument(url: url)
                 if let document, document.isLocked, let password { _ = document.unlock(withPassword: password) }
-                pdf.document = document
+                // A still-locked document has no pages to fit; showing it would retry the fit on every update.
+                pdf.document = (document?.isLocked ?? false) ? nil : document
                 host.invalidateFit()
             }
             if reload || regionChanged {
