@@ -55,7 +55,12 @@ struct ContentView: View {
                 }
             }
         }
-        .task { await store.recoverEmptyImports(); store.organizeTransactions() }
+        .task {
+            // Let the first layout pass finish before the workspace mutates and redraws lists.
+            await Task.yield()
+            await store.recoverEmptyImports()
+            store.organizeTransactions()
+        }
         .onAppear { if store.workspace.businessName.isEmpty { store.showSettings = true } }
         .dropDestination(for: URL.self) { urls, _ in store.enqueue(urls); return true }
         .sheet(isPresented: $store.showAISettings) { AISettingsView(settings: store.ai) }
@@ -124,14 +129,17 @@ struct StatementsView: View {
             ContentUnavailableView { Label("Your statements, organized", systemImage: "doc.text") } description: { Text("Import searchable HSBC or Bank of China PDFs. Bank statements and credit card statements stay in separate folders.") } actions: { Button("Import Statements…") { store.openPDFs() }.buttonStyle(.borderedProminent) }
         } else {
             HSplitView {
-                // Leaf rows only. A `Section` header is a ListHeader, and a nested
-                // DisclosureGroup reloads that outline item while a recycled ListRow
-                // is already detached. AppKit then activates ListHeader.left ==
-                // ListRow.left across two hierarchies and throws NSGenericException.
-                List(selection: $store.selectedStatement) {
-                    ForEach(browserRows) { row in browserRow(row) }
+                // Avoid SwiftUI `List` on macOS: it bridges to NSOutlineView and can
+                // activate ListHeader.left == ListRow.left across recycled row views.
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(browserRows) { row in browserRow(row) }
+                    }
+                    .padding(.vertical, 6)
                 }
                 .frame(minWidth: 250, idealWidth: 280, maxWidth: 320)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .onAppear { revealSelection(store.selectedStatement) }
                 .onChange(of: store.selectedStatement) { _, id in revealSelection(id) }
                 if let selected { StatementDetail(store: store, statement: selected).id(selected.id) }
                 else { ContentUnavailableView("Select a statement", systemImage: "doc.text.magnifyingglass") }
@@ -180,7 +188,7 @@ struct StatementsView: View {
         case .folder(let folder):
             disclosure(expanded: !collapsedFolders.contains(folder), indent: 0, action: { toggle(folder) }) {
                 Label(folder.rawValue, systemImage: Self.folderIcon(folder)).font(.subheadline.weight(.semibold))
-            }.accessibilityAddTraits(.isHeader)
+            }
         case .noAccounts:
             placeholder("No accounts yet", indent: 28)
         case .account(let id):
@@ -193,7 +201,7 @@ struct StatementsView: View {
             placeholder("No statements yet", indent: 44)
         case .statement(let id):
             if let statement = store.workspace.statements.first(where: { $0.id == id }) {
-                statementRow(statement).padding(.leading, 44).tag(id)
+                statementButton(statement)
             }
         }
     }
@@ -213,11 +221,10 @@ struct StatementsView: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
-        .selectionDisabled()
         .accessibilityValue(expanded ? "Expanded" : "Collapsed")
     }
     private func placeholder(_ text: String, indent: CGFloat) -> some View {
-        Text(text).font(.caption).foregroundStyle(.secondary).padding(.leading, indent).frame(maxWidth: .infinity, alignment: .leading).selectionDisabled()
+        Text(text).font(.caption).foregroundStyle(.secondary).padding(.leading, indent).frame(maxWidth: .infinity, alignment: .leading)
     }
     private func toggle(_ folder: StatementFolder) {
         if collapsedFolders.contains(folder) { collapsedFolders.remove(folder) } else { collapsedFolders.insert(folder) }
@@ -236,13 +243,20 @@ struct StatementsView: View {
         }
         let folderCollapsed = folder.map { collapsedFolders.contains($0) } ?? false
         guard collapsedAccounts.contains(accountID) || folderCollapsed else { return }
-        // Next turn, after OutlineListCoordinator finishes its selection update.
-        Task { @MainActor in
-            collapsedAccounts.remove(accountID)
-            if let folder { collapsedFolders.remove(folder) }
-            // Restoring a cleared selection must not overwrite a newer choice.
-            if store.selectedStatement == nil || store.selectedStatement == id { store.selectedStatement = id }
+        collapsedAccounts.remove(accountID)
+        if let folder { collapsedFolders.remove(folder) }
+    }
+    private func statementButton(_ statement: Statement) -> some View {
+        let selected = store.selectedStatement == statement.id
+        return Button { store.selectedStatement = statement.id } label: {
+            statementRow(statement)
+                .padding(.leading, 44)
+                .padding(.horizontal, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(selected ? Color.accentColor.opacity(0.18) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
         }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
     private func accountLabel(_ account: Account, count: Int) -> some View {
         let help: String = account.bank.rawValue + " · " + account.kind.rawValue
