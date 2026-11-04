@@ -226,18 +226,136 @@ struct TransactionsView: View {
         }.padding(20)
     }
 }
+/// Hosts a PDFView without letting it re-enter AppKit layout.
+///
+/// `PDFView.autoScales` calls `-layoutSubtreeIfNeeded` from inside an in-progress
+/// layout pass. SwiftUI also invokes `updateNSView` from that pass, and the old
+/// preview reapplied the highlight and `go(to:)` on every update. Together those
+/// recurse through the statement split view ("It's not legal to call
+/// -layoutSubtreeIfNeeded on a view which is already being laid out") and can
+/// wedge the main thread.
+final class PDFHostView: NSView {
+    let pdfView: PDFView
+    private var fittedSize = NSSize.zero
+    private var fitScheduled = false
+
+    override init(frame frameRect: NSRect) {
+        let pdf = PDFView()
+        pdf.autoScales = false
+        pdf.displayMode = .singlePageContinuous
+        pdf.displayDirection = .vertical
+        pdf.minScaleFactor = 0.1
+        pdf.maxScaleFactor = 4
+        pdfView = pdf
+        super.init(frame: frameRect)
+        pdf.frame = bounds
+        pdf.autoresizingMask = [.width, .height]
+        addSubview(pdf)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+    }
+
+    override func layout() {
+        super.layout()
+        guard bounds.width > 1, bounds.height > 1, !sizesMatch(fittedSize, bounds.size), !fitScheduled else { return }
+        fitScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.fitScheduled = false
+            self.fitToBounds()
+        }
+    }
+
+    /// Fit the current page after the enclosing layout pass. Returns false when there is nothing to fit yet.
+    @discardableResult func fitToBounds() -> Bool {
+        guard bounds.width > 1, bounds.height > 1, let page = pdfView.currentPage ?? pdfView.document?.page(at: 0) else { return false }
+        let pageSize = page.bounds(for: pdfView.displayBox).size
+        guard pageSize.width > 0, pageSize.height > 0 else { return false }
+        let factor = min(pdfView.maxScaleFactor, max(pdfView.minScaleFactor, min(bounds.width / pageSize.width, bounds.height / pageSize.height)))
+        fittedSize = bounds.size
+        if abs(pdfView.scaleFactor - factor) > 0.01 { pdfView.scaleFactor = factor }
+        return true
+    }
+
+    func invalidateFit() { fittedSize = .zero }
+
+    private func sizesMatch(_ lhs: NSSize, _ rhs: NSSize) -> Bool {
+        abs(lhs.width - rhs.width) < 0.5 && abs(lhs.height - rhs.height) < 0.5
+    }
+}
+
 struct PDFPreview: NSViewRepresentable {
     var url: URL
     var region: SourceRegion?
-    final class Coordinator { var url: URL?; var annotation: PDFAnnotation?; weak var page: PDFPage? }
+
+    final class Coordinator {
+        var appliedURL: URL?
+        var appliedRegion: SourceRegion?
+        var annotation: PDFAnnotation?
+        weak var page: PDFPage?
+        var fitted = false
+        var generation = 0
+    }
+
     func makeCoordinator() -> Coordinator { Coordinator() }
-    func makeNSView(context: Context) -> PDFView { let view = PDFView(); view.autoScales = true; view.displayMode = .singlePageContinuous; return view }
-    func updateNSView(_ view: PDFView, context: Context) {
-        if context.coordinator.url != url { view.document = PDFDocument(url: url); context.coordinator.url = url }
-        if let annotation = context.coordinator.annotation { context.coordinator.page?.removeAnnotation(annotation); context.coordinator.annotation = nil }
-        if let region, let page = view.document?.page(at: region.page) {
-            let annotation = PDFAnnotation(bounds: region.rect, forType: .highlight, withProperties: nil); annotation.color = NSColor.systemYellow.withAlphaComponent(0.35)
-            page.addAnnotation(annotation); context.coordinator.annotation = annotation; context.coordinator.page = page; view.go(to: region.rect.insetBy(dx: -10, dy: -30), on: page)
+
+    func makeNSView(context: Context) -> PDFHostView { PDFHostView() }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: PDFHostView, context: Context) -> CGSize? {
+        guard let width = proposal.width, let height = proposal.height, width.isFinite, height.isFinite, width > 0, height > 0 else { return nil }
+        return CGSize(width: width, height: height)
+    }
+
+    func updateNSView(_ host: PDFHostView, context: Context) {
+        let coordinator = context.coordinator
+        let reload = coordinator.appliedURL != url
+        let regionChanged = coordinator.appliedRegion != region
+        guard reload || regionChanged || !coordinator.fitted else { return }
+        if reload { host.invalidateFit() }
+        coordinator.generation += 1
+        let generation = coordinator.generation
+        let url = url
+        let region = region
+        // Document, scale, highlight, and scrolling all invalidate PDF layout.
+        // Apply them on the next turn so this update is not nested inside SwiftUI's layout.
+        DispatchQueue.main.async {
+            guard coordinator.generation == generation else { return }
+            let pdf = host.pdfView
+            if reload || pdf.document == nil {
+                if let annotation = coordinator.annotation { coordinator.page?.removeAnnotation(annotation) }
+                coordinator.annotation = nil
+                coordinator.page = nil
+                pdf.document = PDFDocument(url: url)
+                host.invalidateFit()
+            }
+            if reload || regionChanged {
+                if let annotation = coordinator.annotation {
+                    coordinator.page?.removeAnnotation(annotation)
+                    coordinator.annotation = nil
+                    coordinator.page = nil
+                }
+            }
+            // Scale before scrolling so the fit does not jump away from the highlight.
+            let fitted = host.fitToBounds()
+            if reload || regionChanged, let region, let page = pdf.document?.page(at: region.page) {
+                let annotation = PDFAnnotation(bounds: region.rect, forType: .highlight, withProperties: nil)
+                annotation.color = NSColor.systemYellow.withAlphaComponent(0.35)
+                page.addAnnotation(annotation)
+                coordinator.annotation = annotation
+                coordinator.page = page
+                pdf.go(to: region.rect.insetBy(dx: -10, dy: -30), on: page)
+            }
+            coordinator.appliedURL = url
+            // A missing file or a view that has no size yet must not re-enter layout.
+            // Keep the region pending until the page has actually been fitted, so the highlight scroll runs after that fit.
+            if fitted || pdf.document == nil {
+                coordinator.appliedRegion = region
+                coordinator.fitted = fitted || pdf.document == nil
+            }
         }
     }
 }
