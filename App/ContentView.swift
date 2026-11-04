@@ -123,34 +123,52 @@ struct StatementsView: View {
             ContentUnavailableView { Label("Your statements, organized", systemImage: "doc.text") } description: { Text("Import searchable HSBC or Bank of China PDFs. Bank statements and credit card statements stay in separate folders.") } actions: { Button("Import Statements…") { store.openPDFs() }.buttonStyle(.borderedProminent) }
         } else {
             HSplitView {
-                List(selection: $store.selectedStatement) {
-                    ForEach(StatementFolder.allCases) { folder in folderSection(folder) }
-                }.frame(minWidth: 250, idealWidth: 280, maxWidth: 320)
-                // Open the account folder of a newly selected statement (e.g. right after an import).
-                .onChange(of: store.selectedStatement) { _, id in
-                    if let id, let account = store.workspace.statements.first(where: { $0.id == id })?.accountID { collapsed.remove(account) }
-                }
+                statementBrowser
                 if let selected { StatementDetail(store: store, statement: selected).id(selected.id) }
                 else { ContentUnavailableView("Select a statement", systemImage: "doc.text.magnifyingglass") }
             }
         }
     }
-    // The sidebar is split into small helpers so the compiler can type-check it quickly.
-    @ViewBuilder private func folderSection(_ folder: StatementFolder) -> some View {
-        let accounts: [Account] = store.workspace.accounts(in: folder)
-        SwiftUI.Section {
-            if accounts.isEmpty { Text("No accounts yet").font(.caption).foregroundStyle(.secondary) }
-            // One sub-folder per account, so each bank account and card keeps its own statements.
-            ForEach(accounts) { account in accountFolder(account) }
-        } header: {
-            Label(folder.rawValue, systemImage: Self.folderIcon(folder))
+    /// Folders stay out of `List`/`NSOutlineView`.
+    ///
+    /// A section in that outline is a `ListHeader`. Selecting a statement, or expanding
+    /// its account, reloads the outline and AppKit then activates a constraint from
+    /// `ListHeader.left` to `ListRow.left`. During the reload those views are in different
+    /// hierarchies, so the constraint throws `NSGenericException` and quits the app.
+    private var statementBrowser: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(StatementFolder.allCases) { folder in folderBlock(folder) }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(minWidth: 250, idealWidth: 280, maxWidth: 320, maxHeight: .infinity)
+        .background(Color(nsColor: .controlBackgroundColor))
+        // Open the account folder of a newly selected statement (e.g. right after an import).
+        .onChange(of: store.selectedStatement) { _, id in
+            guard let id, let account = store.workspace.statements.first(where: { $0.id == id })?.accountID, collapsed.contains(account) else { return }
+            collapsed.remove(account)
+        }
+    }
+    // Split into small helpers so the compiler can type-check it quickly.
+    @ViewBuilder private func folderBlock(_ folder: StatementFolder) -> some View {
+        let accounts: [Account] = store.workspace.accounts(in: folder)
+        Label(folder.rawValue, systemImage: Self.folderIcon(folder))
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.top, 10)
+            .padding(.horizontal, 4)
+        if accounts.isEmpty { Text("No accounts yet").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 4) }
+        // One sub-folder per account, so each bank account and card keeps its own statements.
+        ForEach(accounts) { account in accountFolder(account) }
     }
     private func accountFolder(_ account: Account) -> some View {
         let items: [Statement] = store.workspace.statements(forAccount: account.id)
         return DisclosureGroup(isExpanded: expansion(account.id)) {
-            if items.isEmpty { Text("No statements yet").font(.caption).foregroundStyle(.secondary) }
-            ForEach(items) { statement in statementRow(statement).tag(statement.id) }
+            if items.isEmpty { Text("No statements yet").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 8) }
+            ForEach(items) { statement in statementRow(statement) }
         } label: {
             accountLabel(account, count: items.count)
         }
@@ -159,9 +177,11 @@ struct StatementsView: View {
         let help: String = account.bank.rawValue + " · " + account.kind.rawValue
         return HStack {
             Label(account.name, systemImage: "folder")
-            Spacer()
+            Spacer(minLength: 8)
             Text(String(count)).font(.caption).foregroundStyle(.secondary).monospacedDigit()
-        }.help(help)
+        }
+        .help(help)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
     private static func folderIcon(_ folder: StatementFolder) -> String {
         switch folder {
@@ -173,10 +193,21 @@ struct StatementsView: View {
         Binding(get: { !collapsed.contains(id) }, set: { expanded in if expanded { collapsed.remove(id) } else { collapsed.insert(id) } })
     }
     private func statementRow(_ statement: Statement) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(statement.filename).font(.headline).lineLimit(2)
-            HStack { Text(statement.periodEnd); Spacer(); Label(statement.reconciled ? "Reconciled" : "Review", systemImage: statement.reconciled ? "checkmark.circle.fill" : "circle.dashed").foregroundStyle(statement.reconciled ? .green : .orange) }.font(.caption)
-        }.padding(.vertical, 6)
+        let chosen = store.selectedStatement == statement.id
+        return Button { store.selectedStatement = statement.id } label: {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(statement.filename).font(.headline).lineLimit(2)
+                HStack { Text(statement.periodEnd); Spacer(); Label(statement.reconciled ? "Reconciled" : "Review", systemImage: statement.reconciled ? "checkmark.circle.fill" : "circle.dashed").foregroundStyle(statement.reconciled ? .green : .orange) }.font(.caption)
+            }
+            .foregroundStyle(.primary)
+            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 6).fill(chosen ? Color.accentColor.opacity(0.22) : Color.clear))
+            .contentShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(chosen ? .isSelected : AccessibilityTraits())
     }
 }
 struct StatementDetail: View {
