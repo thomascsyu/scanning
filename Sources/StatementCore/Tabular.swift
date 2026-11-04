@@ -234,9 +234,9 @@ public enum Exports {
         let entries = w.entries.filter { $0.statementID == statementID }.sorted { $0.date < $1.date }
         return try XLSX.write(workbookRows(w, entries: entries, includeStatementDate: false), decimalColumns: [3], integerColumns: [13])
     }
-    /// Every transaction on every statement, reviewed or not, in transaction-date order.
-    public static func allTransactions(_ w: Workspace) throws -> Data {
-        let entries = w.entries.sorted { lhs, rhs in
+    /// Every transaction in one statement folder, reviewed or not, in transaction-date order.
+    public static func allTransactions(_ w: Workspace, folder: StatementFolder) throws -> Data {
+        let entries = w.entries(in: folder).sorted { lhs, rhs in
             if lhs.date != rhs.date { return lhs.date < rhs.date }
             let leftName = w.statements.first { $0.id == lhs.statementID }?.filename ?? ""
             let rightName = w.statements.first { $0.id == rhs.statementID }?.filename ?? ""

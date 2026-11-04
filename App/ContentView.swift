@@ -121,22 +121,31 @@ struct StatementsView: View {
     var selected: Statement? { store.workspace.statements.first { $0.id == store.selectedStatement } }
     var body: some View {
         if store.workspace.statements.isEmpty {
-            ContentUnavailableView { Label("Your statements, organized", systemImage: "doc.text") } description: { Text("Import searchable HSBC or Bank of China PDFs. Review extracted rows alongside the original before reconciling.") } actions: { Button("Import Statements…") { store.openPDFs() }.buttonStyle(.borderedProminent) }
+            ContentUnavailableView { Label("Your statements, organized", systemImage: "doc.text") } description: { Text("Import searchable HSBC or Bank of China PDFs. Bank statements and credit card statements stay in separate folders.") } actions: { Button("Import Statements…") { store.openPDFs() }.buttonStyle(.borderedProminent) }
         } else {
             HSplitView {
                 List(selection: $store.selectedStatement) {
-                    ForEach(store.workspace.statements.sorted { $0.importedAt > $1.importedAt }) { s in
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(s.filename).font(.headline).lineLimit(2)
-                            Text(store.workspace.account(s.accountID)?.name ?? "").font(.caption).foregroundStyle(.secondary)
-                            HStack { Text(s.periodEnd); Spacer(); Label(s.reconciled ? "Reconciled" : "Review", systemImage: s.reconciled ? "checkmark.circle.fill" : "circle.dashed").foregroundStyle(s.reconciled ? .green : .orange) }.font(.caption)
-                        }.padding(.vertical, 6).tag(s.id)
+                    ForEach(StatementFolder.allCases) { folder in
+                        Section {
+                            let items = store.workspace.statements(in: folder)
+                            if items.isEmpty { Text("No statements yet").font(.caption).foregroundStyle(.secondary) }
+                            ForEach(items) { statement in statementRow(statement).tag(statement.id) }
+                        } header: {
+                            Label(folder.rawValue, systemImage: folder == .bank ? "building.columns" : "creditcard")
+                        }
                     }
-                }.frame(minWidth: 230, idealWidth: 240, maxWidth: 270)
+                }.frame(minWidth: 250, idealWidth: 280, maxWidth: 320)
                 if let selected { StatementDetail(store: store, statement: selected).id(selected.id) }
                 else { ContentUnavailableView("Select a statement", systemImage: "doc.text.magnifyingglass") }
             }
         }
+    }
+    private func statementRow(_ statement: Statement) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(statement.filename).font(.headline).lineLimit(2)
+            Text(store.workspace.account(statement.accountID)?.name ?? "").font(.caption).foregroundStyle(.secondary)
+            HStack { Text(statement.periodEnd); Spacer(); Label(statement.reconciled ? "Reconciled" : "Review", systemImage: statement.reconciled ? "checkmark.circle.fill" : "circle.dashed").foregroundStyle(statement.reconciled ? .green : .orange) }.font(.caption)
+        }.padding(.vertical, 6)
     }
 }
 struct StatementDetail: View {
@@ -217,7 +226,7 @@ struct TransactionsView: View {
     } }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { TextField("Search descriptions, clients, references…", text: $search).textFieldStyle(.roundedBorder); Toggle("Needs review", isOn: $onlyReview).toggleStyle(.checkbox); Button("Export Excel…") { store.exportAllTransactionsExcel() }.help("Excel workbook of every transaction from every statement, including rows that still need review."); Button("Apply rules") { store.applyRulesInBackground() }.disabled(store.busy) }
+            HStack { TextField("Search descriptions, clients, references…", text: $search).textFieldStyle(.roundedBorder); Toggle("Needs review", isOn: $onlyReview).toggleStyle(.checkbox); Button("Export Excel…") { store.exportAllTransactionsExcel() }.help("Writes bank and credit card transactions into separate Excel folders, including rows that still need review."); Button("Apply rules") { store.applyRulesInBackground() }.disabled(store.busy) }
             HStack {
                 Picker("Direction", selection: $direction) { Text("All").tag(RuleDirection.any); Text("Credits / money in").tag(RuleDirection.incoming); Text("Debits / money out").tag(RuleDirection.outgoing) }.frame(width: 270)
                 Picker("Sort by", selection: $sort) { ForEach(["Date", "Type", "Category"], id: \.self) { Text($0) } }.frame(width: 200)

@@ -8,6 +8,12 @@ public enum AccountKind: String, Codable, CaseIterable, Identifiable, Sendable {
     case bank = "Bank", creditCard = "Credit card"
     public var id: String { rawValue }
 }
+public enum StatementFolder: String, CaseIterable, Identifiable, Sendable {
+    case bank = "Bank statements"
+    case creditCard = "Credit card statements"
+    public var id: String { rawValue }
+    public var kind: AccountKind { self == .bank ? .bank : .creditCard }
+}
 public struct Account: Codable, Identifiable, Equatable, Sendable {
     public var id = UUID()
     public var name: String
@@ -169,6 +175,12 @@ public struct Workspace: Codable, Equatable, Sendable {
     public var categories = ["Uncategorized", "Office supplies", "Software", "Telecoms", "Travel", "Meals", "Rent", "Utilities", "Professional fees", "Bank fees", "Client receipts"]
     public init() {}
     public func account(_ id: UUID) -> Account? { accounts.first { $0.id == id } }
+    public func statements(in folder: StatementFolder) -> [Statement] {
+        statements.filter { account($0.accountID)?.kind == folder.kind }.sorted { $0.importedAt > $1.importedAt }
+    }
+    public func entries(in folder: StatementFolder) -> [Entry] {
+        entries.filter { account($0.accountID)?.kind == folder.kind }
+    }
     public func outstanding(_ invoice: Invoice) -> Int64 { invoice.startingOutstanding - allocations.filter { $0.invoiceID == invoice.id }.reduce(0) { $0 + $1.amount } }
     public func allocated(_ entryID: UUID) -> Int64 { allocations.filter { $0.entryID == entryID }.reduce(0) { $0 + $1.amount } }
     public func incoming(_ entry: Entry) -> Int64 { account(entry.accountID)?.kind == .creditCard ? -entry.amount : entry.amount }
