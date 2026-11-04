@@ -27,7 +27,12 @@ struct ContentView: View {
                 }
             }
         }
-        .task { await store.recoverEmptyImports(); store.organizeTransactions() }
+        .task {
+            // Let the first layout pass finish before the workspace mutates and redraws lists.
+            await Task.yield()
+            await store.recoverEmptyImports()
+            store.organizeTransactions()
+        }
         .onAppear { if store.workspace.businessName.isEmpty { store.showSettings = true } }
         .dropDestination(for: URL.self) { urls, _ in store.enqueue(urls); return true }
         .sheet(isPresented: $store.showAISettings) { AISettingsView(settings: store.ai) }
@@ -170,26 +175,44 @@ struct StatementsView: View {
         .onChange(of: store.selectedStatement) { _, id in
             if let id, let account = store.workspace.statements.first(where: { $0.id == id })?.accountID { collapsed.remove(account) }
         }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .accessibilityValue(expanded ? "Expanded" : "Collapsed")
     }
-    // The sidebar is split into small helpers so the compiler can type-check it quickly.
-    @ViewBuilder private func folderSection(_ folder: StatementFolder) -> some View {
-        let accounts: [Account] = store.workspace.accounts(in: folder)
-        SwiftUI.Section {
-            if accounts.isEmpty { Text("No accounts yet").font(.caption).foregroundStyle(.secondary) }
-            // One sub-folder per account, so each bank account and card keeps its own statements.
-            ForEach(accounts) { account in accountFolder(account) }
-        } header: {
-            Label(folder.rawValue, systemImage: Self.folderIcon(folder))
-        }
+    private func placeholder(_ text: String, indent: CGFloat) -> some View {
+        Text(text).font(.caption).foregroundStyle(.secondary).padding(.leading, indent).frame(maxWidth: .infinity, alignment: .leading)
     }
-    private func accountFolder(_ account: Account) -> some View {
-        let items: [Statement] = store.workspace.statements(forAccount: account.id)
-        return DisclosureGroup(isExpanded: expansion(account.id)) {
-            if items.isEmpty { Text("No statements yet").font(.caption).foregroundStyle(.secondary) }
-            ForEach(items) { statement in statementRow(statement).tag(statement.id) }
-        } label: {
-            accountLabel(account, count: items.count)
+    private func toggle(_ folder: StatementFolder) {
+        if collapsedFolders.contains(folder) { collapsedFolders.remove(folder) } else { collapsedFolders.insert(folder) }
+    }
+    private func toggle(_ account: UUID) {
+        if collapsedAccounts.contains(account) { collapsedAccounts.remove(account) } else { collapsedAccounts.insert(account) }
+    }
+    /// Expand after the selection update. Doing it inline re-enters `reloadItem:reloadChildren:` on a detached row.
+    private func revealSelection(_ id: UUID?) {
+        guard let id, let accountID = store.workspace.statements.first(where: { $0.id == id })?.accountID else { return }
+        let folder: StatementFolder?
+        switch store.workspace.account(accountID)?.kind {
+        case .bank: folder = .bank
+        case .creditCard: folder = .creditCard
+        case nil: folder = nil
         }
+        let folderCollapsed = folder.map { collapsedFolders.contains($0) } ?? false
+        guard collapsedAccounts.contains(accountID) || folderCollapsed else { return }
+        collapsedAccounts.remove(accountID)
+        if let folder { collapsedFolders.remove(folder) }
+    }
+    private func statementButton(_ statement: Statement) -> some View {
+        let selected = store.selectedStatement == statement.id
+        return Button { store.selectedStatement = statement.id } label: {
+            statementRow(statement)
+                .padding(.leading, 44)
+                .padding(.horizontal, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(selected ? Color.accentColor.opacity(0.18) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
     private func accountLabel(_ account: Account, count: Int) -> some View {
         let help: String = account.bank.rawValue + " · " + account.kind.rawValue
@@ -205,9 +228,6 @@ struct StatementsView: View {
         case .creditCard: return "creditcard"
         }
     }
-    private func expansion(_ id: UUID) -> Binding<Bool> {
-        Binding(get: { !collapsed.contains(id) }, set: { expanded in if expanded { collapsed.remove(id) } else { collapsed.insert(id) } })
-    }
     private func statementRow(_ statement: Statement) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(statement.filename).font(.headline).lineLimit(2)
@@ -221,15 +241,25 @@ struct StatementDetail: View {
     @State private var opening = ""
     @State private var closing = ""
     @State private var showPDF = true
-    @State private var pdfLocked = false
+    @State private var pdfLocked: Bool
     @State private var unlockPassword = ""
     @State private var unlockMessage: String?
+    init(store: AppStore, statement: Statement) {
+        self.store = store
+        self.statement = statement
+        // Decide before the first layout, so the detail does not change shape right after it appears.
+        _pdfLocked = State(initialValue: PDFDocument(url: store.pdfURL(statement))?.isLocked ?? false)
+    }
     var entries: [Entry] { store.workspace.entries.filter { $0.statementID == statement.id } }
     var selectedEntry: Entry? { entries.first { $0.id == store.selectedStatementEntry } }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack { VStack(alignment: .leading) { Text(statement.filename).font(.title3.bold()); Text(statement.profile).font(.caption).foregroundStyle(.secondary) }; Spacer(); Menu { Button("Retry with OCR…") { store.reextract(statement, forceOCR: true) }; Button("Roll back import…", role: .destructive) { store.removeStatement(statement) } } label: { Image(systemName: "ellipsis.circle") } }
-            DisclosureGroup("Import notes (\(statement.warnings.count))") { ForEach(statement.warnings, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading) } }
+            DisclosureGroup("Import notes (\(statement.warnings.count))") {
+                // A long list of notes scrolls here rather than making the statement taller than the window.
+                ScrollView { VStack(alignment: .leading, spacing: 2) { ForEach(statement.warnings, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading) } } }
+                    .frame(maxHeight: 110)
+            }
             HStack {
                 TextField("Opening HKD", text: $opening).frame(width: 125)
                 TextField("Closing HKD", text: $closing).frame(width: 125)
@@ -239,7 +269,7 @@ struct StatementDetail: View {
                 Spacer()
                 if let difference = store.workspace.reconciliationDifference(statement) { Text(difference == 0 ? "Balanced" : "Difference: \(Money.display(difference))").font(.caption.bold()).foregroundStyle(difference == 0 ? .green : .orange) }
             }
-            Text(store.workspace.account(statement.accountID)?.kind == .creditCard ? "Card amounts: charges are positive; repayments and credits are negative. Balances represent the amount owed." : "Bank amounts: money received is positive; money paid is negative.").font(.caption).foregroundStyle(.secondary)
+            Text(store.workspace.account(statement.accountID)?.kind == .creditCard ? "Card amounts: charges are positive; repayments and credits are negative. Balances represent the amount owed." : "Bank amounts: money received is positive; money paid is negative.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HSplitView {
                 VStack(alignment: .leading) {
                     HStack {
@@ -259,14 +289,22 @@ struct StatementDetail: View {
                     VStack(alignment: .leading, spacing: 6) {
                         if pdfLocked && store.pdfPasswords[statement.hash] == nil {
                             // The preserved original stays protected; the password is held in memory for this session only.
+                            // A locked PDF is never handed to PDFView: it has no page to fit and kept re-running layout.
                             HStack { SecureField("PDF password to show the preview", text: $unlockPassword).onSubmit { unlockPreview() }; Button("Unlock") { unlockPreview() }.disabled(unlockPassword.isEmpty) }
                             if let unlockMessage { Text(unlockMessage).font(.caption).foregroundStyle(.red) }
+                            ContentUnavailableView("PDF is password protected", systemImage: "lock.doc", description: Text("Enter the PDF password to show the preview."))
+                        } else {
+                            PDFPreview(url: store.pdfURL(statement), region: selectedEntry?.source, password: store.pdfPasswords[statement.hash])
                         }
-                        PDFPreview(url: store.pdfURL(statement), region: selectedEntry?.source, password: store.pdfPasswords[statement.hash])
                     }.frame(minWidth: 240)
                 }
             }
-        }.padding(16).onAppear { refreshBalances(); pdfLocked = PDFDocument(url: store.pdfURL(statement))?.isLocked ?? false }
+            // Takes whatever height is left and is allowed to shrink, so the header above stays on screen.
+            .frame(maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+        }.padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .clipped()
+        .onAppear { refreshBalances() }
         .onChange(of: statement.openingBalance) { _, _ in refreshBalances() }
         .onChange(of: statement.closingBalance) { _, _ in refreshBalances() }
     }
@@ -366,9 +404,11 @@ final class PDFHostView: NSView {
 
     /// Fit the current page after the enclosing layout pass. Returns false when there is nothing to fit yet.
     @discardableResult func fitToBounds() -> Bool {
-        guard bounds.width > 1, bounds.height > 1, let page = pdfView.currentPage ?? pdfView.document?.page(at: 0) else { return false }
+        guard bounds.width > 1, bounds.height > 1 else { return false }
+        // Nothing to fit yet: remember this size so layout() does not reschedule a fit on every pass.
+        guard let page = pdfView.currentPage ?? pdfView.document?.page(at: 0) else { fittedSize = bounds.size; return false }
         let pageSize = page.bounds(for: pdfView.displayBox).size
-        guard pageSize.width > 0, pageSize.height > 0 else { return false }
+        guard pageSize.width > 0, pageSize.height > 0 else { fittedSize = bounds.size; return false }
         let factor = min(pdfView.maxScaleFactor, max(pdfView.minScaleFactor, min(bounds.width / pageSize.width, bounds.height / pageSize.height)))
         fittedSize = bounds.size
         if abs(pdfView.scaleFactor - factor) > 0.01 { pdfView.scaleFactor = factor }
@@ -428,7 +468,8 @@ struct PDFPreview: NSViewRepresentable {
                 coordinator.page = nil
                 let document = PDFDocument(url: url)
                 if let document, document.isLocked, let password { _ = document.unlock(withPassword: password) }
-                pdf.document = document
+                // A still-locked document has no pages to fit; showing it would retry the fit on every update.
+                pdf.document = (document?.isLocked ?? false) ? nil : document
                 host.invalidateFit()
             }
             if reload || regionChanged {

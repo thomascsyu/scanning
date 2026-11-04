@@ -57,6 +57,8 @@ E6DE6C99132752C914FEF632 = { isa = XCBuildConfiguration; name = Release; buildSe
 0E8A3AD980EC179856012B7E = { isa = PBXNativeTarget; buildConfigurationList = 8D8B67C81BE4F695571BC034; buildPhases = (BCE16DD0260827ECF338C787,7561BFB015D8F536760CB671,0189424A5A60FED329FA868E,); buildRules = (); dependencies = (); name = StatementManager; packageProductDependencies = (9D062BAFFF17BA8B9A1215C4,); productName = StatementManager; productReference = 38A007151ABE87CC01A5B6E9; productType = "com.apple.product-type.application"; };
 D166B495A168EFE0F2F74AC2 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DeepSeekTests.swift"; sourceTree = "<group>"; };
 C1261999315DA032096FA9CF = { isa = PBXBuildFile; fileRef = D166B495A168EFE0F2F74AC2; };
+B215B4C6B84A47A7D2630D3C = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HSBCCardTests.swift"; sourceTree = "<group>"; };
+286014601659B7BCBCC1E81B = { isa = PBXBuildFile; fileRef = B215B4C6B84A47A7D2630D3C; };
 50B3E319B475F483D1EFE20E = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "OCRAndLayoutTests.swift"; sourceTree = "<group>"; };
 0F3E7629C3D6739FF0E34F52 = { isa = PBXBuildFile; fileRef = 50B3E319B475F483D1EFE20E; };
 084464111A39E3512DC476B0 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ReviewRegressionTests.swift"; sourceTree = "<group>"; };
@@ -65,9 +67,9 @@ C1261999315DA032096FA9CF = { isa = PBXBuildFile; fileRef = D166B495A168EFE0F2F74
 7A78E784758C6F79E1E8051C = { isa = PBXBuildFile; fileRef = 46D24E98493A9A3B42A8F97B; };
 E424ABEC8BE180E369C9FD6B = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StatementCoreTests.swift"; sourceTree = "<group>"; };
 25661A24483F83BBE5AFB116 = { isa = PBXBuildFile; fileRef = E424ABEC8BE180E369C9FD6B; };
-8B7A6DECC0651D269EA794C7 = { isa = PBXGroup; children = (D166B495A168EFE0F2F74AC2,50B3E319B475F483D1EFE20E,084464111A39E3512DC476B0,46D24E98493A9A3B42A8F97B,E424ABEC8BE180E369C9FD6B,); path = Tests/StatementManagerTests; sourceTree = "<group>"; };
+8B7A6DECC0651D269EA794C7 = { isa = PBXGroup; children = (D166B495A168EFE0F2F74AC2,B215B4C6B84A47A7D2630D3C,50B3E319B475F483D1EFE20E,084464111A39E3512DC476B0,46D24E98493A9A3B42A8F97B,E424ABEC8BE180E369C9FD6B,); path = Tests/StatementManagerTests; sourceTree = "<group>"; };
 B7480EC88B7F22D0A4757273 = { isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = StatementManagerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-9F3002A5D69B22D357A58AA9 = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (C1261999315DA032096FA9CF,0F3E7629C3D6739FF0E34F52,6DDF52379B285F569FB96C25,7A78E784758C6F79E1E8051C,25661A24483F83BBE5AFB116,); runOnlyForDeploymentPostprocessing = 0; };
+9F3002A5D69B22D357A58AA9 = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (C1261999315DA032096FA9CF,286014601659B7BCBCC1E81B,0F3E7629C3D6739FF0E34F52,6DDF52379B285F569FB96C25,7A78E784758C6F79E1E8051C,25661A24483F83BBE5AFB116,); runOnlyForDeploymentPostprocessing = 0; };
 B94A8E14CD83562BCBBE16B7 = { isa = PBXBuildFile; productRef = 9D062BAFFF17BA8B9A1215C4; };
 99C7943D90D870A50ADE9160 = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (B94A8E14CD83562BCBBE16B7,); runOnlyForDeploymentPostprocessing = 0; };
 0F3D67935A4F199E058A017A = { isa = XCBuildConfiguration; name = Debug; buildSettings = { PRODUCT_NAME = StatementManagerTests; PRODUCT_BUNDLE_IDENTIFIER = hk.local.StatementManagerTests; GENERATE_INFOPLIST_FILE = YES; CODE_SIGN_IDENTITY = "-"; CODE_SIGN_STYLE = Manual; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @loader_path/../Frameworks"; }; };
