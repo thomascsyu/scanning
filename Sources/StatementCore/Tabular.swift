@@ -133,17 +133,23 @@ public enum InvoiceReader {
     }
 }
 public enum XLSX {
-    public static func write(_ rows: [[String]], sheetName: String = "Transactions", numericColumns: Set<Int> = []) throws -> Data {
+    /// `decimalColumns` are money amounts (`0.00`). `integerColumns` are whole numbers such as a PDF page.
+    public static func write(_ rows: [[String]], sheetName: String = "Transactions", decimalColumns: Set<Int> = [], integerColumns: Set<Int> = []) throws -> Data {
         guard !rows.isEmpty else { throw LedgerError.invalid("Cannot write an empty workbook.") }
         let safeName = String(sheetName.prefix(31))
+        let width = max(rows.map(\.count).max() ?? 1, 1)
+        let span = "A1:\(columnLetter(width - 1))\(rows.count)"
         var sheetRows = ""
         for (ri, row) in rows.enumerated() {
             var cells = ""
             for (ci, value) in row.enumerated() {
                 let ref = columnLetter(ci) + String(ri + 1)
-                let trustedNumber = ri > 0 && numericColumns.contains(ci) && !value.isEmpty && value.range(of: #"^-?\d+(\.\d+)?$"#, options: .regularExpression) != nil
-                if trustedNumber, let number = Double(value) {
-                    cells += "<c r=\"\(ref)\"><v>\(number)</v></c>"
+                let decimal = ri > 0 && decimalColumns.contains(ci) && value.range(of: #"^-?\d+(\.\d+)?$"#, options: .regularExpression) != nil
+                let integer = ri > 0 && integerColumns.contains(ci) && value.range(of: #"^\d+$"#, options: .regularExpression) != nil
+                if decimal {
+                    cells += "<c r=\"\(ref)\" s=\"1\"><v>\(value)</v></c>"
+                } else if integer {
+                    cells += "<c r=\"\(ref)\" s=\"2\"><v>\(value)</v></c>"
                 } else {
                     cells += "<c r=\"\(ref)\" t=\"inlineStr\"><is><t>\(xmlEscape(value))</t></is></c>"
                 }
@@ -151,11 +157,11 @@ public enum XLSX {
             sheetRows += "<row r=\"\(ri + 1)\">\(cells)</row>"
         }
         let worksheet = """
-        <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>\(sheetRows)</sheetData></worksheet>
+        <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="\(span)"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetData>\(sheetRows)</sheetData></worksheet>
         """
         let parts: [String: String] = [
             "[Content_Types].xml": """
-            <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>
+            <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>
             """,
             "_rels/.rels": """
             <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>
@@ -164,16 +170,21 @@ public enum XLSX {
             <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="\(xmlEscapeAttribute(safeName))" sheetId="1" r:id="rId1"/></sheets></workbook>
             """,
             "xl/_rels/workbook.xml.rels": """
-            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>
+            """,
+            "xl/styles.xml": """
+            <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="0.00"/></numFmts><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="1" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs></styleSheet>
             """,
             "xl/worksheets/sheet1.xml": worksheet
         ]
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".xlsx")
         defer { try? FileManager.default.removeItem(at: url) }
-        let archive = try Archive(url: url, accessMode: .create)
-        for (path, text) in parts {
-            let data = Data(text.utf8)
-            try archive.addEntry(with: path, type: .file, uncompressedSize: Int64(data.count), provider: { position, size in data.subdata(in: Int(position)..<Int(position) + size) })
+        do {
+            let archive = try Archive(url: url, accessMode: .create)
+            for (path, text) in parts {
+                let data = Data(text.utf8)
+                try archive.addEntry(with: path, type: .file, uncompressedSize: Int64(data.count), provider: { position, size in data.subdata(in: Int(position)..<Int(position) + size) })
+            }
         }
         return try Data(contentsOf: url)
     }
@@ -208,16 +219,39 @@ public enum Exports {
         let rows = w.entries.filter(\.reviewed).sorted { $0.date < $1.date }.map { entryRow(w, $0) }
         return CSV.write([transactionHeader] + rows, numericColumns: [3, 13])
     }
+    private static func workbookRows(_ w: Workspace, entries: [Entry], includeStatementDate: Bool) -> [[String]] {
+        var header = transactionHeader + ["Reviewed"]
+        if includeStatementDate { header.append("Statement date") }
+        let body = entries.map { entry -> [String] in
+            var row = entryRow(w, entry) + [entry.reviewed ? "Yes" : "No"]
+            if includeStatementDate { row.append(w.statements.first { $0.id == entry.statementID }?.periodEnd ?? "") }
+            return row
+        }
+        return [header] + body
+    }
     public static func statement(_ w: Workspace, statementID: UUID) throws -> Data {
         guard w.statements.contains(where: { $0.id == statementID }) else { throw LedgerError.invalid("Statement not found.") }
-        let header = transactionHeader + ["Reviewed"]
-        let rows = w.entries.filter { $0.statementID == statementID }.sorted { $0.date < $1.date }.map { entryRow(w, $0) + [$0.reviewed ? "Yes" : "No"] }
-        return try XLSX.write([header] + rows, numericColumns: [3, 13])
+        let entries = w.entries.filter { $0.statementID == statementID }.sorted { $0.date < $1.date }
+        return try XLSX.write(workbookRows(w, entries: entries, includeStatementDate: false), decimalColumns: [3], integerColumns: [13])
+    }
+    /// Every transaction on every statement, reviewed or not, in transaction-date order.
+    public static func allTransactions(_ w: Workspace) throws -> Data {
+        let entries = w.entries.sorted { lhs, rhs in
+            if lhs.date != rhs.date { return lhs.date < rhs.date }
+            let leftName = w.statements.first { $0.id == lhs.statementID }?.filename ?? ""
+            let rightName = w.statements.first { $0.id == rhs.statementID }?.filename ?? ""
+            if leftName != rightName { return leftName < rightName }
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+        return try XLSX.write(workbookRows(w, entries: entries, includeStatementDate: true), decimalColumns: [3], integerColumns: [13])
     }
     public static func suggestedStatementFilename(_ statement: Statement) -> String {
         let base = (statement.filename as NSString).deletingPathExtension
         let suffix = statement.periodEnd.isEmpty ? Day.today : statement.periodEnd
         return "\(base)-\(suffix).xlsx"
+    }
+    public static func suggestedAllTransactionsFilename(on day: String = Day.today) -> String {
+        "all-transactions-\(day).xlsx"
     }
     public static func invoices(_ w: Workspace) -> String {
         CSV.write([["Invoice number", "Client", "Invoice date", "Due date", "Currency", "Original total", "Starting outstanding", "Current outstanding", "Status"]] + w.invoices.map { [$0.number, $0.client, $0.date, $0.dueDate, "HKD", Money.plain($0.total), Money.plain($0.startingOutstanding), Money.plain(w.outstanding($0)), w.invoiceStatus($0)] }, numericColumns: [5,6,7])
