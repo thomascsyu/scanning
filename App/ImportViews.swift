@@ -89,6 +89,7 @@ struct PDFImportView: View {
                     return try PDFExtractor.read(url: url, password: suppliedPassword, forceOCR: ocr)
                 }.value
                 extracted = result; password = ""
+                if !suppliedPassword.isEmpty { store.pdfPasswords[result.hash] = suppliedPassword }
                 if let date = result.suggestedPeriodEnd { periodEnd = date }
                 if accountID == nil {
                     let matching = store.workspace.accounts.filter { $0.bank == result.bank }
@@ -129,26 +130,41 @@ struct PDFImportView: View {
                 statement.manualEntry = result.entries.isEmpty ? true : nil
                 statement.profile = result.profile; statement.warnings = result.warnings
                 statement.openingBalance = result.openingBalance ?? statement.openingBalance; statement.closingBalance = result.closingBalance ?? statement.closingBalance
+                var copiedOriginal: URL?
                 if existing == nil {
                     let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
-                    try FileManager.default.copyItem(at: url, to: store.pdfURL(statement))
+                    let destination = store.pdfURL(statement)
+                    try FileManager.default.copyItem(at: url, to: destination)
+                    copiedOriginal = destination
                 }
+                // A failed import must not leave an unreferenced copy of the PDF in the app's storage.
+                func discardCopy() { if let copiedOriginal { try? FileManager.default.removeItem(at: copiedOriginal) } }
                 let snapshot = store.workspace
-                let prepared = try await Task.detached(priority: .userInitiated) {
-                    var workspace = snapshot
-                    try workspace.commitParsedStatement(statement, parseResult: result)
-                    return workspace
-                }.value
+                let prepared: Workspace
+                do {
+                    prepared = try await Task.detached(priority: .userInitiated) {
+                        var workspace = snapshot
+                        try workspace.commitParsedStatement(statement, parseResult: result)
+                        return workspace
+                    }.value
+                } catch { discardCopy(); throw error }
                 store.error = nil
-                store.change(isReplace ? "Replace statement extraction" : "Import statement") { $0 = prepared }
-                guard store.error == nil else { return }
+                let label = isReplace ? "Replace statement extraction" : "Import statement"
+                // If anything changed the workspace while the import was prepared, apply it to the current state instead.
+                if store.workspace == snapshot { store.change(label) { $0 = prepared } }
+                else { store.change(label) { try $0.commitParsedStatement(statement, parseResult: result) } }
+                guard store.error == nil else { discardCopy(); return }
                 store.selectedStatement = statement.id; store.section = .statements; next()
             } catch { message = error.localizedDescription }
         }
     }
     private func next() {
         if index + 1 >= store.importURLs.count { dismiss() }
-        else { index += 1; extracted = nil; password = ""; message = nil; replaceExisting = false; accountID = nil; forceOCR = false; allowEmptyImport = false; draftID = UUID(); read() }
+        else {
+            // Each file starts clean: a date that is not detected must not silently inherit the previous file's period.
+            index += 1; extracted = nil; parsed = nil; password = ""; message = nil; replaceExisting = false; accountID = nil
+            periodEnd = Day.today; periodStart = ""; forceOCR = false; allowEmptyImport = false; draftID = UUID(); read()
+        }
     }
 }
 struct InvoiceImportView: View {

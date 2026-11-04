@@ -31,7 +31,7 @@ final class DeepSeekTests: XCTestCase {
         XCTAssertEqual(request.url?.absoluteString, "https://api.deepseek.com/chat/completions")
         XCTAssertEqual(request.httpMethod, "POST"); XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer synthetic-test-key")
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: request.httpBody!) as? [String:Any])
-        XCTAssertEqual(body["model"] as? String, "deepseek-flash")
+        XCTAssertEqual(body["model"] as? String, "deepseek-v4-flash")
         XCTAssertEqual((body["thinking"] as? [String:String])?["type"], "disabled")
         XCTAssertEqual((body["response_format"] as? [String:String])?["type"], "json_object")
         let messages = try XCTUnwrap(body["messages"] as? [[String:String]])
@@ -60,7 +60,7 @@ final class DeepSeekTests: XCTestCase {
     func testConnectionOnlyListsModels() async throws {
         MockDeepSeekProtocol.handler = { request in
             XCTAssertEqual(request.url?.path,"/models"); XCTAssertEqual(request.httpMethod,"GET"); XCTAssertNil(request.httpBody)
-            return (200,Data(#"{"data":[{"id":"deepseek-flash"}]}"#.utf8))
+            return (200,Data(#"{"data":[{"id":"deepseek-v4-flash"}]}"#.utf8))
         }
         try await client().checkConnection(apiKey:"test-only")
     }

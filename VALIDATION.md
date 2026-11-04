@@ -15,7 +15,7 @@ Installed app: `/Users/Thomas/Applications/Statement Manager.app`.
 
 ## DeepSeek integration (version 0.2)
 
-- Official model `deepseek-flash`, fixed HTTPS endpoint, JSON mode and disabled thinking.
+- Official model `deepseek-v4-flash`, fixed HTTPS endpoint, JSON mode and disabled thinking.
 - Nine additional mocked API tests passed: request fields/data minimization, input/key rejection, response validation, model access, no model substitution, sanitized HTTP errors, full request/response flow, cancellation, and redirect blocking.
 - Production Keychain access was tested in the signed sandboxed app with a temporary synthetic key, then removed.
 - No real API key was read or saved by this implementation session, and no live DeepSeek API request or paid completion was made. The in-app Test connection checks the user's saved key after they supply it.
@@ -59,3 +59,19 @@ No real financial documents were used as test fixtures. Synthetic UI data lives 
 - Tested adjacent-page B/F and C/F date continuation, final-balance boundaries, decimal figures inside descriptions, reference label normalization with preserved leading zeros/prefixes, trimmed/case-insensitive category duplicates, custom type/export/rule behavior, and empty-import recovery safeguards.
 - Packaged sandboxed self-check passes for PDF/OCR, SwiftData persistence, allocations, CSV, backups, and temporary synthetic Keychain access. Release entitlement inspection confirms sandboxing, user-selected read/write access, and outbound client access for optional AI.
 - Installed 0.4.1 locally. Existing transactions and PDFs were not reparsed or replaced. Previously skipped rows/truncated descriptions need explicit re-extraction with review of the replacement warning. No live API requests were made.
+
+## Version 0.5: software review fixes (not yet built or tested on a Mac)
+
+These changes were made in a Linux environment without the macOS SDK, so neither the app nor the test suite has been compiled or run yet. Before installing, run `./scripts/test.sh` and the Release build on the Mac, then `--self-check`.
+
+- DeepSeek model changed from `deepseek-flash` to the current `deepseek-v4-flash`. Confirm with **Test connection** using your saved key.
+- Multi-file PDF import now resets the period start/end and preview for each file, so an undetected statement date no longer inherits the previous file's period.
+- Duplicate flags are recomputed in linear time and cleared when the matching row disappears (statement rollback, re-import, row removal, or an edit that resolves the match). Edits and removals only clear flags, so a row the user confirmed as separate is not re-flagged.
+- Invoice register amounts with Excel floating-point noise are rounded to the cent; genuine extra decimals are still rejected.
+- Reports: bank-only Money received / Money paid, with card charges and card repayments/credits shown separately to avoid double-counting card bill payments.
+- Background rule application, empty-import recovery, and statement import re-apply to the current workspace if it changed meanwhile, so concurrent edits are not overwritten.
+- Password-protected originals can be previewed: the import password, or one entered in the statement view, is held in memory for the session only and never saved.
+- Failed imports and restores remove the PDF copies they made. All-transactions Excel export no longer overwrites a same-day export. Category rename uses the same validation as adding a category (case-insensitive duplicates, length, single line).
+- Workspace validation is indexed (linear time) and date validation reuses a formatter. The activity log keeps the latest 5,000 records and each transaction keeps its latest 20 corrections.
+- 11 new synthetic regression tests in `StatementCoreTests.swift`.
+

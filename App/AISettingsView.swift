@@ -41,7 +41,7 @@ struct AISettingsView: View {
             Text("The key stays out of workspace backups and exports. Requests use your DeepSeek API account; API charges may apply. Nothing is sent automatically during imports.").font(.caption).foregroundStyle(.secondary)
             if let status { Text(status).font(.callout).foregroundStyle(failed ? Color.red : Color.secondary).textSelection(.enabled) }
             HStack {
-                Link("DeepSeek API documentation", destination: URL(string: "https://api-docs.deepseek.com/guides/harness")!)
+                Link("DeepSeek API documentation", destination: URL(string: "https://api-docs.deepseek.com/")!)
                 Spacer()
                 if testing { ProgressView().controlSize(.small); Button("Cancel test") { task?.cancel() } }
                 else { Button("Test connection") { testConnection() }.disabled(!settings.hasKey || !key.isEmpty) }
@@ -53,14 +53,14 @@ struct AISettingsView: View {
     }
     private func fail(_ error: Error) { status = error.localizedDescription; failed = true }
     private func saveKey() {
-        do { try settings.saveKey(key); key = ""; status = "Key saved. Use Test connection to verify deepseek-flash access."; failed = false }
+        do { try settings.saveKey(key); key = ""; status = "Key saved. Use Test connection to verify \(DeepSeekClient.model) access."; failed = false }
         catch { fail(error) }
     }
     private func testConnection() {
         testing = true; status = nil
         task = Task {
             defer { testing = false; task = nil }
-            do { try await DeepSeekClient().checkConnection(apiKey: settings.keyStore.read()); status = "Connected. deepseek-flash is available for this API key."; failed = false }
+            do { try await DeepSeekClient().checkConnection(apiKey: settings.keyStore.read()); status = "Connected. \(DeepSeekClient.model) is available for this API key."; failed = false }
             catch is CancellationError { status = "Connection test cancelled."; failed = false }
             catch { fail(error) }
         }

@@ -98,14 +98,11 @@ struct WorkspaceSettings: View {
                         Picker("Rename", selection: $categoryToRename) { ForEach(store.workspace.categories.filter { $0 != "Uncategorized" }, id: \.self) { Text($0).tag($0) } }
                         TextField("New name", text: $replacementCategory)
                         Button("Rename") {
-                            let name = replacementCategory.trimmingCharacters(in: .whitespacesAndNewlines)
-                            store.change("Rename expense category") { w in
-                                if let i = w.categories.firstIndex(of: categoryToRename) { w.categories[i] = name }
-                                for i in w.entries.indices where w.entries[i].category == categoryToRename { w.entries[i].category = name }
-                                for i in w.rules.indices where w.rules[i].category == categoryToRename { w.rules[i].category = name }
-                            }
-                            categoryToRename = name; replacementCategory = ""
-                        }.disabled(replacementCategory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.workspace.categories.contains(replacementCategory.trimmingCharacters(in: .whitespacesAndNewlines)))
+                            let name = replacementCategory.trimmingCharacters(in: .whitespacesAndNewlines), old = categoryToRename
+                            store.error = nil
+                            store.change("Rename expense category") { try $0.renameCategory(old, to: name) }
+                            if store.error == nil { categoryToRename = name; replacementCategory = "" }
+                        }.disabled(replacementCategory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }.padding(8)
             }
@@ -154,6 +151,9 @@ struct StatementDetail: View {
     @State private var opening = ""
     @State private var closing = ""
     @State private var showPDF = true
+    @State private var pdfLocked = false
+    @State private var unlockPassword = ""
+    @State private var unlockMessage: String?
     var entries: [Entry] { store.workspace.entries.filter { $0.statementID == statement.id } }
     var selectedEntry: Entry? { entries.first { $0.id == store.selectedStatementEntry } }
     var body: some View {
@@ -185,11 +185,24 @@ struct StatementDetail: View {
                     } else { EntryTable(store: store, entries: entries, selection: $store.selectedStatementEntry) }
                     HStack { Text("\(entries.filter(\.reviewed).count) reviewed").font(.caption).foregroundStyle(.secondary); Spacer(); Button(statement.reconciled ? "Reconciled" : "Mark reconciled") { store.change("Reconcile statement") { w in if let i = w.statements.firstIndex(where: { $0.id == statement.id }) { w.statements[i].reconciled = true } } }.disabled(statement.reconciled || store.workspace.reconciliationDifference(statement) != 0 || entries.contains { !$0.reviewed || $0.duplicateCandidate }) }
                 }.frame(minWidth: 440)
-                if showPDF { PDFPreview(url: store.pdfURL(statement), region: selectedEntry?.source).frame(minWidth: 240) }
+                if showPDF {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if pdfLocked && store.pdfPasswords[statement.hash] == nil {
+                            // The preserved original stays protected; the password is held in memory for this session only.
+                            HStack { SecureField("PDF password to show the preview", text: $unlockPassword).onSubmit { unlockPreview() }; Button("Unlock") { unlockPreview() }.disabled(unlockPassword.isEmpty) }
+                            if let unlockMessage { Text(unlockMessage).font(.caption).foregroundStyle(.red) }
+                        }
+                        PDFPreview(url: store.pdfURL(statement), region: selectedEntry?.source, password: store.pdfPasswords[statement.hash])
+                    }.frame(minWidth: 240)
+                }
             }
-        }.padding(16).onAppear { refreshBalances() }
+        }.padding(16).onAppear { refreshBalances(); pdfLocked = PDFDocument(url: store.pdfURL(statement))?.isLocked ?? false }
         .onChange(of: statement.openingBalance) { _, _ in refreshBalances() }
         .onChange(of: statement.closingBalance) { _, _ in refreshBalances() }
+    }
+    private func unlockPreview() {
+        guard let document = PDFDocument(url: store.pdfURL(statement)), document.unlock(withPassword: unlockPassword) else { unlockMessage = "That password does not open this PDF."; return }
+        store.pdfPasswords[statement.hash] = unlockPassword; unlockPassword = ""; unlockMessage = nil
     }
     private func refreshBalances() { opening = statement.openingBalance.map(Money.plain) ?? ""; closing = statement.closingBalance.map(Money.plain) ?? "" }
 }
@@ -302,9 +315,11 @@ final class PDFHostView: NSView {
 struct PDFPreview: NSViewRepresentable {
     var url: URL
     var region: SourceRegion?
+    var password: String? = nil
 
     final class Coordinator {
         var appliedURL: URL?
+        var appliedPassword: String?
         var appliedRegion: SourceRegion?
         var annotation: PDFAnnotation?
         weak var page: PDFPage?
@@ -323,7 +338,7 @@ struct PDFPreview: NSViewRepresentable {
 
     func updateNSView(_ host: PDFHostView, context: Context) {
         let coordinator = context.coordinator
-        let reload = coordinator.appliedURL != url
+        let reload = coordinator.appliedURL != url || coordinator.appliedPassword != password
         let regionChanged = coordinator.appliedRegion != region
         guard reload || regionChanged || !coordinator.fitted else { return }
         if reload { host.invalidateFit() }
@@ -331,6 +346,7 @@ struct PDFPreview: NSViewRepresentable {
         let generation = coordinator.generation
         let url = url
         let region = region
+        let password = password
         // Document, scale, highlight, and scrolling all invalidate PDF layout.
         // Apply them on the next turn so this update is not nested inside SwiftUI's layout.
         DispatchQueue.main.async {
@@ -340,7 +356,9 @@ struct PDFPreview: NSViewRepresentable {
                 if let annotation = coordinator.annotation { coordinator.page?.removeAnnotation(annotation) }
                 coordinator.annotation = nil
                 coordinator.page = nil
-                pdf.document = PDFDocument(url: url)
+                let document = PDFDocument(url: url)
+                if let document, document.isLocked, let password { _ = document.unlock(withPassword: password) }
+                pdf.document = document
                 host.invalidateFit()
             }
             if reload || regionChanged {
@@ -361,6 +379,7 @@ struct PDFPreview: NSViewRepresentable {
                 pdf.go(to: region.rect.insetBy(dx: -10, dy: -30), on: page)
             }
             coordinator.appliedURL = url
+            coordinator.appliedPassword = password
             // A missing file or a view that has no size yet must not re-enter layout.
             // Keep the region pending until the page has actually been fitted, so the highlight scroll runs after that fit.
             if fitted || pdf.document == nil {

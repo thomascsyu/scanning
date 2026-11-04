@@ -194,4 +194,90 @@ final class StatementCoreTests: XCTestCase {
         let backup = root.appendingPathComponent("test.hkledger"); try WorkspaceBackup.write(w, documents: originals, destination: backup); XCTAssertEqual(try WorkspaceBackup.read(backup), w)
         try Data("tampered".utf8).write(to: backup.appendingPathComponent("Originals/test.pdf")); XCTAssertThrowsError(try WorkspaceBackup.read(backup))
     }
+
+    // MARK: Review fixes
+
+    func secondStatement(_ w: inout Workspace) -> Statement {
+        var other = w.statements[0]; other.id = UUID(); other.hash = "different"; other.storedFilename = "other.pdf"; w.statements.append(other); return other
+    }
+    func testDuplicateFlagsClearWhenOverlappingStatementIsRolledBack() {
+        var w = fixture(); var a = entry(w); a.reviewed = false; w.entries = [a]
+        let other = secondStatement(&w)
+        var c = a; c.id = UUID(); c.statementID = other.id; w.entries.append(c); w.flagDuplicates()
+        XCTAssertTrue(w.entries.allSatisfy(\.duplicateCandidate))
+        w.removeStatement(other.id)
+        XCTAssertEqual(w.entries.count, 1); XCTAssertFalse(w.entries[0].duplicateCandidate)
+    }
+    func testDuplicateFlagsClearWhenRowIsRemoved() throws {
+        var w = fixture(); var a = entry(w); a.reviewed = false; w.entries = [a]
+        let other = secondStatement(&w)
+        var c = a; c.id = UUID(); c.statementID = other.id; w.entries.append(c); w.flagDuplicates()
+        try w.removeEntry(c.id)
+        XCTAssertFalse(w.entries[0].duplicateCandidate)
+    }
+    func testClearOnlyPassKeepsUserConfirmation() {
+        var w = fixture(); var a = entry(w); a.reviewed = false; w.entries = [a]
+        let other = secondStatement(&w)
+        var c = a; c.id = UUID(); c.statementID = other.id; w.entries.append(c); w.flagDuplicates()
+        w.entries[0].duplicateCandidate = false // user confirmed it is a separate transaction
+        w.flagDuplicates(markNew: false)
+        XCTAssertFalse(w.entries[0].duplicateCandidate); XCTAssertTrue(w.entries[1].duplicateCandidate)
+    }
+    func testRemoveEntryRefusesAllocatedPayment() throws {
+        var w = fixture(); w.entries = [entry(w)]; w.invoices = [invoice()]
+        try w.allocate(entryID: w.entries[0].id, invoiceID: w.invoices[0].id, amount: 5000)
+        XCTAssertThrowsError(try w.removeEntry(w.entries[0].id)); XCTAssertEqual(w.entries.count, 1)
+    }
+    func testSpreadsheetAmountsRoundFloatingPointArtifacts() throws {
+        XCTAssertEqual(try Money.parseSpreadsheet("1320.0000000000002"), 132000)
+        XCTAssertEqual(try Money.parseSpreadsheet("99.98999999999999"), 9999)
+        XCTAssertEqual(try Money.parseSpreadsheet("1.2E3"), 120000)
+        XCTAssertEqual(try Money.parseSpreadsheet("1,200.50"), 120050)
+        XCTAssertThrowsError(try Money.parseSpreadsheet("12.345"))
+        XCTAssertThrowsError(try Money.parseSpreadsheet("abc"))
+    }
+    func testInvoiceImportAcceptsFormulaResults() throws {
+        let sheet = Sheet(name: "Register", rows: [["Invoice number", "Client", "Invoice date", "Original total", "Starting outstanding"], ["INV-9", "Example Client", "2026-01-01", "1320.0000000000002", "1320.0000000000002"]])
+        let invoices = try InvoiceReader.invoices(sheet: sheet, mapping: InvoiceReader.suggestedMapping(headers: sheet.rows[0]))
+        XCTAssertEqual(invoices.first?.total, 132000)
+    }
+    func testCashSummaryDoesNotDoubleCountCardRepayments() {
+        var w = Workspace()
+        let bank = Account(name: "Bank", bank: .hsbc, kind: .bank), card = Account(name: "Card", bank: .hsbc, kind: .creditCard)
+        w.accounts = [bank, card]
+        let bs = Statement(accountID: bank.id, filename: "b.pdf", storedFilename: "b.pdf", hash: "b"), cs = Statement(accountID: card.id, filename: "c.pdf", storedFilename: "c.pdf", hash: "c")
+        w.statements = [bs, cs]
+        func row(_ s: Statement, _ amount: Int64) -> Entry { var e = Entry(statementID: s.id, accountID: s.accountID, date: "2026-03-05", amount: amount, description: "X"); e.reviewed = true; return e }
+        // Client pays 1,000; card spends 300; bank pays the 300 card bill; card shows the 300 repayment.
+        w.entries = [row(bs, 100_000), row(cs, 30_000), row(bs, -30_000), row(cs, -30_000)]
+        let summary = w.cashSummary(month: "2026-03")
+        XCTAssertEqual(summary.received, 100_000); XCTAssertEqual(summary.paid, 30_000)
+        XCTAssertEqual(summary.cardCharges, 30_000); XCTAssertEqual(summary.cardCredits, 30_000)
+        XCTAssertEqual(w.cashSummary(month: "2026-04"), CashSummary())
+    }
+    func testRenameCategoryValidatesAndUpdatesReferences() throws {
+        var w = fixture(); var e = entry(w); e.category = "Software"; w.entries = [e]
+        var rule = CategoryRule(); rule.category = "Software"; w.rules = [rule]
+        XCTAssertThrowsError(try w.renameCategory("Software", to: "travel"))
+        XCTAssertThrowsError(try w.renameCategory("Software", to: "  "))
+        XCTAssertThrowsError(try w.renameCategory("Software", to: "Line\nbreak"))
+        XCTAssertThrowsError(try w.renameCategory("Uncategorized", to: "Other"))
+        try w.renameCategory("Software", to: " SaaS ")
+        XCTAssertTrue(w.categories.contains("SaaS")); XCTAssertFalse(w.categories.contains("Software"))
+        XCTAssertEqual(w.entries[0].category, "SaaS"); XCTAssertEqual(w.rules[0].category, "SaaS")
+        try w.renameCategory("SaaS", to: "saas") // changing only the letter case of the same category is allowed
+    }
+    func testValidationStillRejectsUnbalancedReconciledStatement() {
+        var w = fixture(); w.statements[0].openingBalance = 100; w.statements[0].closingBalance = 999; w.entries = [entry(w)]
+        w.statements[0].reconciled = true
+        XCTAssertThrowsError(try w.validate())
+        w.statements[0].closingBalance = 10100; XCTAssertNoThrow(try w.validate())
+        w.entries[0].duplicateCandidate = true; XCTAssertThrowsError(try w.validate())
+    }
+    func testDuplicateDetectionScalesLinearly() {
+        var w = fixture(); let other = secondStatement(&w)
+        for i in 0..<20_000 { var e = Entry(statementID: i % 2 == 0 ? w.statements[0].id : other.id, accountID: w.accounts[0].id, date: "2026-01-20", amount: Int64(i), description: "ROW \(i)"); e.reviewed = false; w.entries.append(e) }
+        let start = Date(); w.flagDuplicates(); XCTAssertLessThan(Date().timeIntervalSince(start), 5)
+        XCTAssertFalse(w.entries.contains(where: \.duplicateCandidate))
+    }
 }
