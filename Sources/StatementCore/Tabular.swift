@@ -1,0 +1,157 @@
+import Foundation
+import CoreXLSX
+import ZIPFoundation
+
+public enum CSV {
+    public static func read(_ text: String) throws -> [[String]] {
+        let chars = Array(text.replacingOccurrences(of: "\u{FEFF}", with: "").replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n"))
+        var rows: [[String]] = [], row: [String] = [], cell = "", quoted = false, closed = false, i = 0
+        while i < chars.count {
+            let c = chars[i]
+            if quoted {
+                if c == "\"" {
+                    if i + 1 < chars.count && chars[i+1] == "\"" { cell.append("\""); i += 1 }
+                    else { quoted = false; closed = true }
+                } else { cell.append(c) }
+            } else if c == "\"" {
+                guard cell.isEmpty && !closed else { throw LedgerError.invalid("Malformed CSV quote.") }; quoted = true
+            } else if c == "," { row.append(cell); cell = ""; closed = false }
+            else if c == "\n" || c == "\r" {
+                row.append(cell); if row.contains(where: { !$0.isEmpty }) { rows.append(row) }; row = []; cell = ""; closed = false
+                if c == "\r" && i + 1 < chars.count && chars[i+1] == "\n" { i += 1 }
+            } else {
+                if closed && c != " " && c != "\t" { throw LedgerError.invalid("Unexpected text after a quoted CSV value.") }
+                if !closed { cell.append(c) }
+            }
+            i += 1
+        }
+        guard !quoted else { throw LedgerError.invalid("CSV contains an unclosed quoted field.") }
+        row.append(cell); if row.contains(where: { !$0.isEmpty }) { rows.append(row) }; return rows
+    }
+    public static func write(_ rows: [[String]], numericColumns: Set<Int> = []) -> String {
+        rows.enumerated().map { ri, row in row.enumerated().map { ci, original in
+            var value = original
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trustedNumber = ri > 0 && numericColumns.contains(ci) && value.range(of: #"^-?\d+(\.\d+)?$"#, options: .regularExpression) != nil
+            if !trustedNumber && (trimmed.first.map { "=+-@".contains($0) } == true || value.hasPrefix("\t") || value.hasPrefix("\r")) { value = "'" + value }
+            return "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+        }.joined(separator: ",") }.joined(separator: "\r\n") + "\r\n"
+    }
+}
+public struct Sheet: Sendable {
+    public var name: String
+    public var rows: [[String]]
+    public var uses1904Dates: Bool
+    public init(name: String, rows: [[String]], uses1904Dates: Bool = false) { self.name = name; self.rows = rows; self.uses1904Dates = uses1904Dates }
+}
+public enum InvoiceColumn: String, CaseIterable, Identifiable, Sendable {
+    case number = "Invoice number", client = "Client", date = "Invoice date", total = "Original total", outstanding = "Starting outstanding", dueDate = "Due date", currency = "Currency"
+    public var id: String { rawValue }
+    public var required: Bool { ![Self.dueDate, .currency].contains(self) }
+}
+public enum InvoiceReader {
+    public static func sheets(url: URL) throws -> [Sheet] {
+        if url.pathExtension.lowercased() == "csv" {
+            let data = try Data(contentsOf: url)
+            guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .utf16) else { throw LedgerError.invalid("Save the CSV as UTF-8 to preserve Chinese text.") }
+            return [Sheet(name: url.lastPathComponent, rows: try CSV.read(text))]
+        }
+        guard url.pathExtension.lowercased() == "xlsx", let file = XLSXFile(filepath: url.path) else { throw LedgerError.invalid("Use an unencrypted .xlsx or UTF-8 CSV file.") }
+        let shared = try file.parseSharedStrings()
+        let styles = try? file.parseStyles()
+        let archive = try Archive(url: url, accessMode: .read)
+        let metadata = WorkbookMetadata()
+        if let entry = archive["xl/workbook.xml"] {
+            var data = Data()
+            _ = try archive.extract(entry) { data.append($0) }
+            let parser = XMLParser(data: data); parser.delegate = metadata
+            guard parser.parse() else { throw LedgerError.invalid("Unable to read workbook date settings.") }
+        }
+        var result: [Sheet] = []
+        for workbook in try file.parseWorkbooks() {
+            for (name, path) in try file.parseWorksheetPathsAndNames(workbook: workbook) {
+                let sheet = try file.parseWorksheet(at: path)
+                var rows: [[String]] = []
+                for row in sheet.data?.rows ?? [] {
+                    var values: [String] = []
+                    for cell in row.cells {
+                        let letters = cell.reference.column.value
+                        let column = letters.utf8.reduce(0) { $0 * 26 + Int($1) - 64 } - 1
+                        guard column >= 0 && column < 512 else { throw LedgerError.invalid("Invoice worksheets may contain at most 512 columns.") }
+                        while values.count <= column { values.append("") }
+                        if let shared, let value = cell.stringValue(shared) { values[column] = value }
+                        else { values[column] = cell.inlineString?.text ?? cell.value ?? "" }
+                        if let styles, let formatID = cell.format(in: styles)?.numberFormatId,
+                           let code = styles.numberFormats?.items.first(where: { $0.id == formatID })?.formatCode,
+                           code.range(of: #"^0{2,20}$"#, options: .regularExpression) != nil,
+                           let raw = cell.value, raw.allSatisfy({ $0.isNumber }), raw.count < code.count {
+                            values[column] = String(repeating: "0", count: code.count - raw.count) + raw
+                        }
+                    }
+                    if values.contains(where: { !$0.isEmpty }) { rows.append(values) }
+                }
+                result.append(Sheet(name: name ?? "Worksheet", rows: rows, uses1904Dates: metadata.uses1904))
+            }
+        }
+        return result
+    }
+    public static func suggestedMapping(headers: [String]) -> [String: Int] {
+        let aliases: [InvoiceColumn: [String]] = [.number: ["invoice number", "invoice", "invoice no", "發票號碼", "發票編號"], .client: ["client", "customer", "客戶"], .date: ["invoice date", "date", "日期"], .total: ["original total", "total", "amount", "總額"], .outstanding: ["starting outstanding", "outstanding", "balance", "未付金額"], .dueDate: ["due date", "到期日"], .currency: ["currency", "幣種"]]
+        var map: [String: Int] = [:]
+        for column in InvoiceColumn.allCases {
+            if let i = headers.firstIndex(where: { header in (aliases[column] ?? []).contains(header.trimmingCharacters(in: .whitespaces).lowercased()) }) { map[column.rawValue] = i }
+        }
+        return map
+    }
+    public static func invoices(sheet: Sheet, mapping: [String: Int]) throws -> [Invoice] {
+        for column in InvoiceColumn.allCases where column.required {
+            guard let i = mapping[column.rawValue], i >= 0, i < (sheet.rows.first?.count ?? 0) else { throw LedgerError.invalid("Map the \(column.rawValue) column.") }
+        }
+        let required = InvoiceColumn.allCases.filter(\.required).compactMap { mapping[$0.rawValue] }
+        guard Set(required).count == required.count else { throw LedgerError.invalid("Map each required field to a different column.") }
+        var invoices: [Invoice] = []
+        for (offset, row) in sheet.rows.dropFirst().enumerated() {
+            func value(_ column: InvoiceColumn) -> String { guard let i = mapping[column.rawValue], i >= 0, i < row.count else { return "" }; return row[i].trimmingCharacters(in: .whitespacesAndNewlines) }
+            func date(_ text: String) throws -> String {
+                if let serial = Double(text), serial >= 1 && serial < 100000 {
+                    // Excel's 1900 date system (including its historical leap-year offset).
+                    let d = Date(timeIntervalSince1970: (serial - (sheet.uses1904Dates ? 24107 : 25569)).rounded(.down) * 86400)
+                    let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(secondsFromGMT: 0); f.dateFormat = "yyyy-MM-dd"; return f.string(from: d)
+                }
+                return try Day.parse(text)
+            }
+            do {
+                let currency = value(.currency).uppercased()
+                guard currency.isEmpty || ["HKD", "HK$", "港幣", "港元"].contains(currency) else { throw LedgerError.invalid("Only HKD invoices are supported.") }
+                var invoice = Invoice(number: value(.number), client: value(.client), date: try date(value(.date)), total: try Money.parse(value(.total)), outstanding: try Money.parse(value(.outstanding)))
+                if !value(.dueDate).isEmpty { invoice.dueDate = try date(value(.dueDate)) }
+                invoices.append(invoice)
+            } catch { throw LedgerError.invalid("Row \(offset + 2): \(error.localizedDescription)") }
+        }
+        guard !invoices.isEmpty else { throw LedgerError.invalid("The worksheet has no invoice rows.") }
+        var test = Workspace(); try test.importInvoices(invoices, filename: "Validation"); return invoices
+    }
+}
+public enum Exports {
+    public static func transactions(_ w: Workspace) -> String {
+        let header = ["Account", "Date", "Currency", "Amount", "Amount convention", "Original description", "Payee / client", "Type", "Category", "Invoice reference", "Cheque reference", "Bank reference", "Source", "Page"]
+        let rows = w.entries.filter(\.reviewed).sorted { $0.date < $1.date }.map { e -> [String] in
+            let account = w.account(e.accountID)
+            return [account?.name ?? "", e.date, "HKD", Money.plain(e.amount), account?.kind == .creditCard ? "Positive increases amount owed" : "Positive is money received", e.rawDescription, e.payee, e.typeTitle, e.category, e.invoiceReference, e.chequeReference, e.bankReference, w.statements.first { $0.id == e.statementID }?.filename ?? "", e.source.map { String($0.page + 1) } ?? ""]
+        }
+        return CSV.write([header] + rows, numericColumns: [3,13])
+    }
+    public static func invoices(_ w: Workspace) -> String {
+        CSV.write([["Invoice number", "Client", "Invoice date", "Due date", "Currency", "Original total", "Starting outstanding", "Current outstanding", "Status"]] + w.invoices.map { [$0.number, $0.client, $0.date, $0.dueDate, "HKD", Money.plain($0.total), Money.plain($0.startingOutstanding), Money.plain(w.outstanding($0)), w.invoiceStatus($0)] }, numericColumns: [5,6,7])
+    }
+    public static func allocations(_ w: Workspace) -> String {
+        CSV.write([["Allocation ID", "Payment ID", "Invoice number", "Currency", "Amount"]] + w.allocations.map { allocation in [allocation.id.uuidString, allocation.entryID.uuidString, w.invoices.first { $0.id == allocation.invoiceID }?.number ?? "", "HKD", Money.plain(allocation.amount)] }, numericColumns: [4])
+    }
+}
+
+private final class WorkbookMetadata: NSObject, XMLParserDelegate {
+    var uses1904 = false
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes: [String: String]) {
+        if elementName == "workbookPr" { uses1904 = ["1", "true"].contains(attributes["date1904"] ?? "") }
+    }
+}

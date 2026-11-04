@@ -1,0 +1,19 @@
+# Local macOS build output
+build/
+.build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Financial samples stay off the repo
+PrivateSamples/
+*.pdf
+*.xlsx
+*.xls
+*.csv
+*.hkledger
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+.DS_Store
