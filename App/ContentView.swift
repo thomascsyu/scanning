@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import StatementCore
 import PDFKit
 
@@ -11,7 +12,11 @@ struct ContentView: View {
                     Label("Statement Manager", systemImage: "building.columns.fill").font(.headline)
                     Text(store.workspace.businessName.isEmpty ? "Your local financial workspace" : store.workspace.businessName).font(.caption).foregroundStyle(.secondary)
                 }.padding(18)
-                List(Section.allCases, selection: $store.section) { item in Label(item.rawValue, systemImage: item.icon).tag(item) }
+                List(selection: $store.section) {
+                    ForEach(SidebarSection.allCases) { item in
+                        Label(item.rawValue, systemImage: item.icon).tag(item)
+                    }
+                }
                 VStack(alignment: .leading, spacing: 8) {
                     Label(store.ai.enabled ? "Local storage · AI enabled" : "Local processing · AI off", systemImage: "lock.shield").font(.caption).foregroundStyle(.secondary)
                     Text("HKD · HSBC & Bank of China").font(.caption2).foregroundStyle(.secondary)

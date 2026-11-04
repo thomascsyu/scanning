@@ -9,7 +9,7 @@ import StatementCore
     var error: String?
     var notice: String?
     var busy = false
-    var section: Section = .statements
+    var section: SidebarSection = .statements
     var selectedStatement: UUID?
     var selectedStatementEntry: UUID?
     var selectedTransactionEntry: UUID?
@@ -206,7 +206,7 @@ import StatementCore
         editingEntry = Entry(statementID: statement.id, accountID: statement.accountID, date: statement.periodEnd.isEmpty ? Day.today : statement.periodEnd, amount: 0, description: "")
     }
 }
-enum Section: String, CaseIterable, Identifiable {
+enum SidebarSection: String, CaseIterable, Identifiable {
     case statements = "Statements", transactions = "Transactions", invoices = "Invoices", rules = "Rules", reports = "Reports"
     var id: String { rawValue }
     var icon: String { switch self { case .statements: "doc.text"; case .transactions: "list.bullet.rectangle"; case .invoices: "doc.text.magnifyingglass"; case .rules: "slider.horizontal.3"; case .reports: "chart.bar.xaxis" } }
