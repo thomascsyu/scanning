@@ -35,15 +35,16 @@ struct EntryEditor: View {
             }
             AISuggestionPanel(settings: store.ai, description: entry.rawDescription, direction: aiDirection, categories: store.workspace.categories) { suggestion in
                 entry.customType = nil; entry.category = suggestion.category; entry.type = suggestion.transactionType; entry.reviewed = false
-                entry.notes += (entry.notes.isEmpty ? "" : "\n") + "AI category suggestion accepted (deepseek-flash); verify against source."
+                entry.notes += (entry.notes.isEmpty ? "" : "\n") + "AI category suggestion accepted (\(DeepSeekClient.model)); verify against source."
             }
             Toggle("Reviewed against the original statement", isOn: $entry.reviewed)
             if let message { Text(message).foregroundStyle(.red) }
             HStack {
                 if store.workspace.entries.contains(where: { $0.id == original.id }) {
                     Button("Remove row", role: .destructive) {
-                        if store.workspace.allocated(entry.id) > 0 { message = "Reverse payment allocations before removing this transaction."; return }
-                        store.change("Remove transaction") { w in w.entries.removeAll { $0.id == entry.id }; if let i = w.statements.firstIndex(where: { $0.id == entry.statementID }) { w.statements[i].reconciled = false } }; dismiss()
+                        store.error = nil
+                        store.change("Remove transaction") { try $0.removeEntry(entry.id) }
+                        if let error = store.error { message = error; store.error = nil } else { dismiss() }
                     }
                 }
                 Spacer(); Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)

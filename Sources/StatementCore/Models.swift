@@ -215,6 +215,24 @@ public enum Money {
         let cents = NSDecimalNumber(decimal: decimal * 100).int64Value
         return negative ? -abs(cents) : cents
     }
+    /// Amounts read from a spreadsheet cell. Excel stores formula results as binary floating point, so a total of
+    /// 1320 can arrive as "1320.0000000000002". Such values are rounded to cents only when they are within a
+    /// float-representation error of a whole-cent amount; a genuine third decimal (e.g. 12.345) is still rejected.
+    public static func parseSpreadsheet(_ text: String) throws -> Int64 {
+        if let cents = try? parse(text) { return cents }
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.range(of: #"^[+-]?\d+(\.\d+)?([eE][+-]?\d+)?$"#, options: .regularExpression) != nil,
+              let decimal = Decimal(string: value, locale: Locale(identifier: "en_US_POSIX")), abs(decimal) <= Decimal(1_000_000_000_000 as Int64) else {
+            return try parse(text)
+        }
+        var exact = decimal * 100, rounded = Decimal()
+        NSDecimalRound(&rounded, &exact, 0, .plain)
+        let tolerance = max(Decimal(string: "0.000001")!, abs(rounded) * Decimal(string: "0.000000000001")!)
+        guard abs(exact - rounded) <= tolerance else {
+            throw LedgerError.invalid("Enter a valid HKD amount with no more than two decimal places.")
+        }
+        return NSDecimalNumber(decimal: rounded).int64Value
+    }
     public static func plain(_ cents: Int64) -> String { String(format: "%@%lld.%02lld", cents < 0 ? "-" : "", abs(cents) / 100, abs(cents) % 100) }
     public static func signed(_ cents: Int64) -> String { (cents > 0 ? "+" : "") + plain(cents) }
     public static func display(_ cents: Int64) -> String { "HK$ " + plain(cents) }
@@ -230,9 +248,14 @@ public enum Day {
               let month = Int(parts[1]), month >= 1, month <= 12 else { return false }
         return true
     }
+    // DateFormatter is thread-safe on macOS; reuse one because validation checks every row on each save.
+    private static let isoFormatter: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.calendar = Calendar(identifier: .gregorian); f.timeZone = TimeZone(secondsFromGMT: 0); f.dateFormat = "yyyy-MM-dd"; f.isLenient = false
+        return f
+    }()
     public static func valid(_ value: String) -> Bool {
         guard value.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil else { return false }
-        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.calendar = Calendar(identifier: .gregorian); f.timeZone = TimeZone(secondsFromGMT: 0); f.dateFormat = "yyyy-MM-dd"; f.isLenient = false
+        let f = isoFormatter
         guard let date = f.date(from: value) else { return false }; return f.string(from: date) == value
     }
     public static func parse(_ value: String) throws -> String {

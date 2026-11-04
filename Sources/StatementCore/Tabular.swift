@@ -123,7 +123,7 @@ public enum InvoiceReader {
             do {
                 let currency = value(.currency).uppercased()
                 guard currency.isEmpty || ["HKD", "HK$", "港幣", "港元"].contains(currency) else { throw LedgerError.invalid("Only HKD invoices are supported.") }
-                var invoice = Invoice(number: value(.number), client: value(.client), date: try date(value(.date)), total: try Money.parse(value(.total)), outstanding: try Money.parse(value(.outstanding)))
+                var invoice = Invoice(number: value(.number), client: value(.client), date: try date(value(.date)), total: try Money.parseSpreadsheet(value(.total)), outstanding: try Money.parseSpreadsheet(value(.outstanding)))
                 if !value(.dueDate).isEmpty { invoice.dueDate = try date(value(.dueDate)) }
                 invoices.append(invoice)
             } catch { throw LedgerError.invalid("Row \(offset + 2): \(error.localizedDescription)") }

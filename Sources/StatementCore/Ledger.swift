@@ -27,6 +27,16 @@ public extension Workspace {
         allocations.removeAll { ids.contains($0.entryID) }
         entries.removeAll { $0.statementID == id }
         statements.removeAll { $0.id == id }
+        // Rows that only looked like duplicates of the removed statement are no longer duplicates.
+        flagDuplicates(markNew: false)
+    }
+    /// Remove one transaction (no allocations may reference it) and refresh duplicate flags and reconciliation.
+    mutating func removeEntry(_ id: UUID) throws {
+        guard let entry = entries.first(where: { $0.id == id }) else { return }
+        guard allocated(id) == 0 else { throw LedgerError.invalid("Reverse payment allocations before removing this transaction.") }
+        entries.removeAll { $0.id == id }
+        if let i = statements.firstIndex(where: { $0.id == entry.statementID }) { statements[i].reconciled = false }
+        flagDuplicates(markNew: false)
     }
     /// Replace or add a statement and its parsed rows, then re-run duplicate detection and rules.
     mutating func commitParsedStatement(_ statement: Statement, parseResult: ParseResult) throws {
@@ -65,15 +75,23 @@ public extension Workspace {
         next.invoiceBatches.removeLast()
         try next.validate(); self = next
     }
-    mutating func flagDuplicates() {
+    /// Flag unreviewed rows that match a row on a different statement of the same account (date, amount, description).
+    /// A flag is cleared once no such row exists any more, e.g. after the overlapping statement is rolled back.
+    /// Linear time: rows are grouped by a key instead of compared pairwise.
+    /// With `markNew: false` flags are only cleared, so a row the user just confirmed as separate is not re-flagged.
+    mutating func flagDuplicates(markNew: Bool = true) {
+        struct Key: Hashable { let account: UUID; let date: String; let amount: Int64; let description: String }
+        func key(_ entry: Entry) -> Key {
+            Key(account: entry.accountID, date: entry.date, amount: entry.amount,
+                description: entry.rawDescription.trimmingCharacters(in: .whitespacesAndNewlines).folding(options: [.caseInsensitive], locale: Locale(identifier: "en_US_POSIX")))
+        }
+        var statementsByKey: [Key: Set<UUID>] = [:]
+        for entry in entries { statementsByKey[key(entry), default: []].insert(entry.statementID) }
         for i in entries.indices {
-            let entry = entries[i]
-            // Do not collapse repeated transactions within a single statement.
-            let duplicate = entries.contains { other in
-                other.id != entry.id && other.statementID != entry.statementID && other.accountID == entry.accountID && other.date == entry.date && other.amount == entry.amount &&
-                other.rawDescription.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(entry.rawDescription.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
-            }
-            if duplicate && !entries[i].reviewed { entries[i].duplicateCandidate = true }
+            // Repeated transactions within a single statement are not duplicates.
+            let duplicate = (statementsByKey[key(entries[i])]?.count ?? 0) > 1
+            if !duplicate { entries[i].duplicateCandidate = false }
+            else if markNew && !entries[i].reviewed { entries[i].duplicateCandidate = true }
         }
     }
     func ruleMatches(_ rule: CategoryRule, _ entry: Entry) -> Bool {
@@ -110,25 +128,40 @@ public extension Workspace {
               invoices.allSatisfy({ $0.total >= 0 && $0.total <= limit && $0.startingOutstanding >= 0 && $0.startingOutstanding <= $0.total }) else {
             throw LedgerError.invalid("Workspace exceeds supported record or monetary limits (50,000 transactions, invoices, or allocations).")
         }
+        // Index once so validation stays linear; it runs on every save.
+        let accountKinds = Dictionary(accounts.map { ($0.id, $0.kind) }, uniquingKeysWith: { a, _ in a })
+        let statementAccounts = Dictionary(statements.map { ($0.id, $0.accountID) }, uniquingKeysWith: { a, _ in a })
+        let entryIDs = Set(entries.map(\.id)), invoiceIDs = Set(invoices.map(\.id))
+        var allocatedByEntry: [UUID: Int64] = [:], allocatedByInvoice: [UUID: Int64] = [:]
+        for item in allocations {
+            guard item.amount > 0, item.amount <= limit, entryIDs.contains(item.entryID), invoiceIDs.contains(item.invoiceID) else { throw LedgerError.invalid("Invalid payment allocation.") }
+            allocatedByEntry[item.entryID, default: 0] += item.amount; allocatedByInvoice[item.invoiceID, default: 0] += item.amount
+        }
+        var totalByStatement: [UUID: Int64] = [:], openByStatement = Set<UUID>()
+        for entry in entries {
+            totalByStatement[entry.statementID, default: 0] += entry.amount
+            if !entry.reviewed || entry.duplicateCandidate { openByStatement.insert(entry.statementID) }
+        }
         for statement in statements {
-            guard account(statement.accountID) != nil, statement.storedFilename == URL(fileURLWithPath: statement.storedFilename).lastPathComponent, !statement.storedFilename.isEmpty else { throw LedgerError.invalid("Invalid statement account or document path.") }
+            guard accountKinds[statement.accountID] != nil, statement.storedFilename == URL(fileURLWithPath: statement.storedFilename).lastPathComponent, !statement.storedFilename.isEmpty else { throw LedgerError.invalid("Invalid statement account or document path.") }
             if let opening = statement.openingBalance, opening < -limit || opening > limit { throw LedgerError.invalid("Statement balance is too large.") }
             if let closing = statement.closingBalance, closing < -limit || closing > limit { throw LedgerError.invalid("Statement balance is too large.") }
-            if statement.reconciled && (reconciliationDifference(statement) != 0 || entries.contains { $0.statementID == statement.id && (!$0.reviewed || $0.duplicateCandidate) }) { throw LedgerError.invalid("A reconciled statement must balance and have every transaction reviewed.") }
+            if statement.reconciled {
+                let difference = statement.openingBalance.flatMap { opening in statement.closingBalance.map { opening + (totalByStatement[statement.id] ?? 0) - $0 } }
+                if difference != 0 || openByStatement.contains(statement.id) { throw LedgerError.invalid("A reconciled statement must balance and have every transaction reviewed.") }
+            }
         }
         for entry in entries {
             guard Day.valid(entry.date), entry.amount >= -limit, entry.amount <= limit,
-                  let statement = statements.first(where: { $0.id == entry.statementID }), statement.accountID == entry.accountID else { throw LedgerError.invalid("A transaction has an invalid date, amount, or statement account.") }
-            let used = allocated(entry.id)
-            if used > 0 && (!entry.reviewed || account(entry.accountID)?.kind != .bank || entry.type == .transfer || entry.type == .refund || used > entry.amount) { throw LedgerError.invalid("Reverse payment allocations before changing this payment's amount, type, or review status.") }
+                  let statementAccount = statementAccounts[entry.statementID], statementAccount == entry.accountID else { throw LedgerError.invalid("A transaction has an invalid date, amount, or statement account.") }
+            let used = allocatedByEntry[entry.id] ?? 0
+            if used > 0 && (!entry.reviewed || accountKinds[entry.accountID] != .bank || entry.type == .transfer || entry.type == .refund || used > entry.amount) { throw LedgerError.invalid("Reverse payment allocations before changing this payment's amount, type, or review status.") }
         }
         for invoice in invoices {
             guard !invoice.number.trimmingCharacters(in: .whitespaces).isEmpty, !invoice.client.trimmingCharacters(in: .whitespaces).isEmpty,
                   Day.valid(invoice.date), invoice.dueDate.isEmpty || Day.valid(invoice.dueDate), invoice.total >= 0, invoice.total <= limit,
-                  invoice.startingOutstanding >= 0, invoice.startingOutstanding <= invoice.total, outstanding(invoice) >= 0 else { throw LedgerError.invalid("Invoice dates or amounts are invalid. Outstanding must be between zero and the original total, and cover existing allocations.") }
-        }
-        for item in allocations {
-            guard item.amount > 0, item.amount <= limit, entries.contains(where: { $0.id == item.entryID }), invoices.contains(where: { $0.id == item.invoiceID }) else { throw LedgerError.invalid("Invalid payment allocation.") }
+                  invoice.startingOutstanding >= 0, invoice.startingOutstanding <= invoice.total,
+                  invoice.startingOutstanding - (allocatedByInvoice[invoice.id] ?? 0) >= 0 else { throw LedgerError.invalid("Invoice dates or amounts are invalid. Outstanding must be between zero and the original total, and cover existing allocations.") }
         }
     }
 }
@@ -165,7 +198,42 @@ public extension Entry {
     }
 }
 
+public struct CashSummary: Equatable, Sendable {
+    /// Bank inflows and outflows: the cash that actually moved through bank accounts.
+    public var received: Int64 = 0, paid: Int64 = 0
+    /// Card activity is shown separately. Paying a card bill from the bank is already in `paid`, so adding card
+    /// charges to cash paid (or card repayments to cash received) would count the same money twice.
+    public var cardCharges: Int64 = 0, cardCredits: Int64 = 0
+    public init() {}
+}
+
 public extension Workspace {
+    /// Reviewed, non-transfer activity for a month (YYYY-MM).
+    func cashSummary(month: String) -> CashSummary {
+        var summary = CashSummary()
+        for entry in entries where entry.reviewed && entry.type != .transfer && entry.date.hasPrefix(month) {
+            switch account(entry.accountID)?.kind {
+            case .bank?: if entry.amount > 0 { summary.received += entry.amount } else { summary.paid -= entry.amount }
+            case .creditCard?: if entry.amount > 0 { summary.cardCharges += entry.amount } else { summary.cardCredits -= entry.amount }
+            case nil: break
+            }
+        }
+        return summary
+    }
+    /// Rename an expense category everywhere, with the same name rules as adding one.
+    mutating func renameCategory(_ old: String, to name: String) throws {
+        guard old != "Uncategorized", let index = categories.firstIndex(of: old) else { throw LedgerError.invalid("Choose a category to rename.") }
+        let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty, cleaned.count <= 80, cleaned.rangeOfCharacter(from: .controlCharacters) == nil else {
+            throw LedgerError.invalid("Enter a name of 1–80 characters on a single line.")
+        }
+        guard !categories.contains(where: { $0 != old && $0.compare(cleaned, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame }) else {
+            throw LedgerError.invalid("That category already exists.")
+        }
+        categories[index] = cleaned
+        for i in entries.indices where entries[i].category == old { entries[i].category = cleaned }
+        for i in rules.indices where rules[i].category == old { rules[i].category = cleaned }
+    }
     mutating func addClassificationItem(_ name: String, isType: Bool) throws -> String {
         let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty, cleaned.count <= 80, cleaned.rangeOfCharacter(from: .controlCharacters) == nil else {

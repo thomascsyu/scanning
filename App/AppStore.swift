@@ -24,6 +24,8 @@ import StatementCore
     var showAISettings = false
     var ai = AISettings()
     var editingEntry: Entry?
+    /// Passwords typed during import, keyed by PDF hash. Memory only, never saved, so protected originals can be previewed this session.
+    var pdfPasswords: [String: String] = [:]
     var undoHistory: [(String, Workspace)] = []
     var redoHistory: [(String, Workspace)] = []
     let repository: LedgerRepository
@@ -41,6 +43,8 @@ import StatementCore
     func change(_ label: String, _ action: (inout Workspace) throws -> Void) {
         do {
             let old = workspace; var next = old; try action(&next); next.audit.append(AuditRecord(label))
+            // The whole workspace is rewritten on each save; keep the activity log bounded.
+            if next.audit.count > Self.auditLimit { next.audit.removeFirst(next.audit.count - Self.auditLimit) }
             try repository.save(next); workspace = next
             undoHistory.append((label, old)); if undoHistory.count > 30 { undoHistory.removeFirst() }; redoHistory.removeAll()
         } catch { self.error = error.localizedDescription }
@@ -66,6 +70,8 @@ import StatementCore
         guard let (label, next) = redoHistory.last else { return }
         do { var restored = next; restored.audit = workspace.audit + [AuditRecord("Redo: " + label)]; try repository.save(restored); undoHistory.append((label, workspace)); workspace = restored; redoHistory.removeLast() } catch { self.error = error.localizedDescription }
     }
+    static let auditLimit = 5_000
+    static let revisionsPerEntry = 20
     func pdfURL(_ statement: Statement) -> URL { documents.appendingPathComponent(statement.storedFilename) }
     func openPDFs() {
         guard !workspace.accounts.isEmpty else { showSettings = true; return }
@@ -119,12 +125,19 @@ import StatementCore
                 guard count > 0 else { continue }
                 let directory = root.appendingPathComponent(folder.rawValue, isDirectory: true)
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                let file = directory.appendingPathComponent(Exports.suggestedAllTransactionsFilename())
+                // Never overwrite an earlier export from the same day.
+                let file = Self.uniqueFile(in: directory, filename: Exports.suggestedAllTransactionsFilename())
                 try Exports.allTransactions(workspace, folder: folder).write(to: file)
                 notes.append("\(count) \(folder == .bank ? "bank" : "credit card")")
             }
             notice = notes.isEmpty ? "No transactions to export." : "Exported \(notes.joined(separator: " and ")) transactions into separate folders."
         } catch { self.error = error.localizedDescription }
+    }
+    static func uniqueFile(in directory: URL, filename: String) -> URL {
+        let base = (filename as NSString).deletingPathExtension, ext = (filename as NSString).pathExtension
+        var candidate = directory.appendingPathComponent(filename), n = 2
+        while FileManager.default.fileExists(atPath: candidate.path) { candidate = directory.appendingPathComponent("\(base) (\(n)).\(ext)"); n += 1 }
+        return candidate
     }
     func backup() {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true; panel.message = "Choose a secure destination. Backups contain financial data; use an encrypted disk."
@@ -142,14 +155,21 @@ import StatementCore
             let alert = NSAlert(); alert.messageText = "Replace the current workspace?"; alert.informativeText = "The selected backup will replace all current records. You can undo this replacement during this session."; alert.addButton(withTitle: "Restore backup"); alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
             // Remap filenames so restoring cannot overwrite originals needed by Undo.
-            var restored = next
-            for index in restored.statements.indices {
-                let old = restored.statements[index].storedFilename
-                let filename = UUID().uuidString + ".pdf"
-                try FileManager.default.copyItem(at: source.appendingPathComponent("Originals").appendingPathComponent(old), to: documents.appendingPathComponent(filename))
-                restored.statements[index].storedFilename = filename
-            }
+            var restored = next, copied: [URL] = []
+            // A failed restore must not leave unreferenced copies of the originals behind.
+            func discardCopies() { for url in copied { try? FileManager.default.removeItem(at: url) } }
+            do {
+                for index in restored.statements.indices {
+                    let old = restored.statements[index].storedFilename
+                    let destination = documents.appendingPathComponent(UUID().uuidString + ".pdf")
+                    try FileManager.default.copyItem(at: source.appendingPathComponent("Originals").appendingPathComponent(old), to: destination)
+                    copied.append(destination)
+                    restored.statements[index].storedFilename = destination.lastPathComponent
+                }
+            } catch { discardCopies(); throw error }
+            self.error = nil
             change("Restore backup") { $0 = restored }
+            if self.error != nil { discardCopies() }
         } catch { self.error = error.localizedDescription }
     }
     func removeStatement(_ statement: Statement) {
@@ -169,15 +189,24 @@ import StatementCore
                     try w.validate()
                     return w
                 }.value
-                change("Apply categorization rules") { $0 = next }
+                // If the user changed anything meanwhile, apply rules to the current state so that edit is kept.
+                if workspace == snapshot { change("Apply categorization rules") { $0 = next } }
+                else { change("Apply categorization rules") { $0.applyRules() } }
             } catch { self.error = error.localizedDescription }
         }
     }
     func saveEntry(_ value: Entry) {
         change("Edit transaction") { state in
             var entry = value; entry.manuallyEdited = true; entry.ruleID = nil
-            if let i = state.entries.firstIndex(where: { $0.id == entry.id }) { state.revisions.append(EntryRevision(previous: state.entries[i])); state.entries[i] = entry } else { state.entries.append(entry) }
+            if let i = state.entries.firstIndex(where: { $0.id == entry.id }) {
+                state.revisions.append(EntryRevision(previous: state.entries[i])); state.entries[i] = entry
+                // Keep the most recent corrections for each transaction; older history is dropped to bound the workspace.
+                let mine = state.revisions.indices.filter { state.revisions[$0].previous.id == entry.id }
+                if mine.count > Self.revisionsPerEntry { let drop = Set(mine.prefix(mine.count - Self.revisionsPerEntry)); state.revisions = state.revisions.enumerated().filter { !drop.contains($0.offset) }.map(\.element) }
+            } else { state.entries.append(entry) }
             if let i = state.statements.firstIndex(where: { $0.id == entry.statementID }) { state.statements[i].reconciled = false }
+            // A corrected date, amount or description can resolve a possible duplicate elsewhere.
+            state.flagDuplicates(markNew: false)
         }
     }
     func reextract(_ statement: Statement, forceOCR: Bool = false) {
@@ -202,7 +231,13 @@ import StatementCore
                     guard try candidate.recoverEmptyImport(statementID: statement.id, pdf: pdf) else { return nil as Workspace? }
                     return candidate
                 }.value
-                if let candidate = recovered {
+                if var candidate = recovered {
+                    if workspace != snapshot {
+                        // Something changed while recovering; redo it on the current state so no edit is overwritten.
+                        var current = workspace
+                        guard try current.recoverEmptyImport(statementID: statement.id, pdf: pdf) else { continue }
+                        candidate = current
+                    }
                     change("Recover empty PDF import") { $0 = candidate }
                     if error == nil {
                         selectedStatement = statement.id

@@ -41,13 +41,13 @@ Use **File → Import Invoice Register** (⇧⌘I). Select an Excel worksheet or
 | Due date | Optional | 2026-02-01 |
 | Currency | Optional; defaults to HKD | HKD |
 
-Dates support ISO and day/month/year. XLSX numeric dates support 1900 and 1904 systems, and simple zero-padded numeric identifier formats are preserved. Save formula workbooks in Excel before import so cached values are current. Legacy `.xls` and encrypted spreadsheets must be saved as unencrypted `.xlsx` or CSV. Headers must be the first nonempty row.
+Formula results stored by Excel with floating-point noise (for example `1320.0000000000002`) are rounded to the cent; a genuine third decimal place is still rejected. Dates support ISO and day/month/year. XLSX numeric dates support 1900 and 1904 systems, and simple zero-padded numeric identifier formats are preserved. Save formula workbooks in Excel before import so cached values are current. Legacy `.xls` and encrypted spreadsheets must be saved as unencrypted `.xlsx` or CSV. Headers must be the first nonempty row.
 
 The outstanding column is a **baseline**. The app subtracts only payments allocated here. When importing updates, do not substitute a later outstanding amount that already includes those same payments. Updates require explicit review and retain allocation links. Invoice numbers must be unique across the business; conflicting client identities are rejected.
 
 In **Invoices → Match a payment**, choose a reviewed incoming bank transaction and confirm invoice/amount. Partial payments, multiple payments, and splitting one payment across invoices are supported. Excess remains unallocated. Suggestions do not post automatically. Reverse mistaken allocations from invoice details. Client aliases are separated by semicolons.
 
-Reports show reviewed cash movements, net categorized expenses, and invoice balances. Transfers are excluded. These are not double-entry financial statements or tax classifications. Version one supports up to 50,000 transactions, invoices, and allocations each.
+Reports show reviewed cash movements, net categorized expenses, and invoice balances. Transfers are excluded. **Money received** and **Money paid** count bank accounts only; card charges and card repayments/credits are shown separately, because paying a card bill from the bank is already included in Money paid. Mark the bank-side card bill payment as Internal Transfer to keep it out of category totals. These are not double-entry financial statements or tax classifications. Version one supports up to 50,000 transactions, invoices, and allocations each.
 
 ## DeepSeek AI settings
 
@@ -55,17 +55,17 @@ Version 0.2 adds **AI Settings…** in the app menu, sidebar, and Workspace Sett
 
 1. Quit and reopen the updated app.
 2. Open **AI Settings…**, paste your DeepSeek API key into the secure field, and choose **Save key**. Do not paste the key into chat or source code.
-3. Choose **Test connection** to verify that your saved key can access `deepseek-flash`. This calls the models endpoint and sends no transaction data.
+3. Choose **Test connection** to verify that your saved key can access `deepseek-v4-flash`. This calls the models endpoint and sends no transaction data.
 4. Enable **DeepSeek assistance** (off by default).
 5. Open a transaction for review and choose **Suggest category**. Review the explanation, choose **Use suggestion**, then verify the transaction and save it. Applying a suggestion resets its reviewed checkbox; it never posts an invoice allocation or changes amounts.
 
-The model is exactly `deepseek-flash`, with the official endpoint `https://api.deepseek.com/chat/completions`. No alternative model is silently substituted. Requests use JSON output and non-thinking mode with a bounded output size. Your DeepSeek API billing applies.
+The model is exactly `deepseek-v4-flash` (DeepSeek retired the older `deepseek-chat` / `deepseek-reasoner` names in 2026), with the official endpoint `https://api.deepseek.com/chat/completions`. No alternative model is silently substituted. Requests use JSON output and non-thinking mode with a bounded output size. Your DeepSeek API billing applies.
 
 Only the selected transaction description, incoming/outgoing direction, HKD currency, allowed categories and transaction types are submitted. Descriptions may contain client names or references. The app does not submit PDFs, exact amounts, dates, balances, or the invoice register. Import/OCR/rules remain local, and nothing is sent automatically. Disabled AI prevents category requests; the explicit connection-test button can still check credentials.
 
 API keys are saved in the local macOS Keychain, not the workspace, logs, exports, or backups. Keys are not synchronized by this app. **Remove key** deletes the saved credential and switches assistance off. Network failures or invalid responses leave the transaction unchanged; returned categories and types are validated. Redirects are blocked to avoid forwarding credentials to another endpoint. Requests use an ephemeral session without cookies or response caching.
 
-[DeepSeek API reference](https://api-docs.deepseek.com/guides/harness) · [JSON output](https://api-docs.deepseek.com/guides/json_mode/)
+[DeepSeek API reference](https://api-docs.deepseek.com/) · [JSON output](https://api-docs.deepseek.com/guides/json_mode/)
 
 ## Data protection and recovery
 

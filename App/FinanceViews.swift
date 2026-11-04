@@ -170,11 +170,17 @@ struct ReportsView: View {
                         Text("Reviewed transactions only · Transfers excluded").font(.caption).foregroundStyle(.secondary)
                     }
                 }
+                let summary = monthValid ? store.workspace.cashSummary(month: reportMonth) : CashSummary()
                 HStack(spacing: 16) {
-                    metric("Money received", value: entries.filter { store.workspace.incoming($0) > 0 }.reduce(0) { $0 + store.workspace.incoming($1) })
-                    metric("Money paid", value: entries.filter { store.workspace.incoming($0) < 0 }.reduce(0) { $0 - store.workspace.incoming($1) })
+                    metric("Money received (bank)", value: summary.received)
+                    metric("Money paid (bank)", value: summary.paid)
                     metric("Invoices outstanding", value: store.workspace.invoices.reduce(0) { $0 + store.workspace.outstanding($1) })
                 }
+                HStack(spacing: 16) {
+                    metric("Card charges", value: summary.cardCharges)
+                    metric("Card repayments & credits", value: summary.cardCredits)
+                }
+                Text("Card bill payments from the bank are already in Money paid, so card activity is shown separately rather than added to the cash totals. Mark the bank-side card bill payment as Internal Transfer to keep it out of the category totals below.").font(.caption).foregroundStyle(.secondary)
                 GroupBox("Net expenses by category") {
                     VStack(spacing: 10) {
                         ForEach(store.workspace.categories, id: \.self) { category in

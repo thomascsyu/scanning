@@ -18,7 +18,7 @@ public enum DeepSeekError: LocalizedError {
         case .rateLimited: return "DeepSeek is rate-limiting requests. Wait a moment before trying again."
         case .unavailable: return "DeepSeek is temporarily unavailable. Try again later."
         case .invalidResponse: return "DeepSeek returned an incomplete or unsupported suggestion. Nothing was changed; try again."
-        case .modelUnavailable: return "This API key does not list deepseek-flash as available. Check access in your DeepSeek account."
+        case .modelUnavailable: return "This API key does not list \(DeepSeekClient.model) as available. Check access in your DeepSeek account."
         case .http(let status): return "DeepSeek could not complete the request (HTTP \(status)). Check your API account and try again."
         case .network: return "Could not reach DeepSeek. Check your connection and try again."
         }
@@ -29,7 +29,7 @@ final class DeepSeekRedirectBlocker: NSObject, URLSessionTaskDelegate, @unchecke
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 }
 public final class DeepSeekClient: @unchecked Sendable {
-    public static let model = "deepseek-flash"
+    public static let model = "deepseek-v4-flash"
     public static let baseURL = "https://api.deepseek.com"
     private let session: URLSession
     public init(session: URLSession? = nil) {
