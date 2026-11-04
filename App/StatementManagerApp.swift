@@ -24,6 +24,7 @@ import StatementCore
                 Button("Import Statements…") { store?.openPDFs() }.keyboardShortcut("i").disabled(store?.workspace.accounts.isEmpty != false)
                 Button("Import Invoice Register…") { store?.openInvoices() }.keyboardShortcut("i", modifiers: [.command, .shift])
                 Divider()
+                Button("Export Statement to Excel…") { store?.exportStatementExcel() }.disabled(store?.selectedStatement == nil)
                 Button("Export Reviewed Transactions…") { store?.export("transactions") }.keyboardShortcut("e", modifiers: [.command, .shift])
                 Button("Create Backup…") { store?.backup() }
                 Button("Restore Backup…") { store?.restore() }

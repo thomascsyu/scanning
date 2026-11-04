@@ -44,7 +44,13 @@ struct ContentView: View {
             .toolbar {
                 ToolbarItemGroup {
                     Button { store.openPDFs() } label: { Label("Import Statements", systemImage: "square.and.arrow.down") }.disabled(store.showPDFImport)
-                    Menu { Button("Transactions") { store.export("transactions") }; Button("Invoice balances") { store.export("invoices") }; Button("Payment allocations") { store.export("allocations") } } label: { Label("Export", systemImage: "square.and.arrow.up") }
+                    Menu {
+                        Button("Statement to Excel…") { store.exportStatementExcel() }.disabled(store.selectedStatement == nil)
+                        Divider()
+                        Button("Transactions") { store.export("transactions") }
+                        Button("Invoice balances") { store.export("invoices") }
+                        Button("Payment allocations") { store.export("allocations") }
+                    } label: { Label("Export", systemImage: "square.and.arrow.up") }
                 }
             }
         }
@@ -156,7 +162,13 @@ struct StatementDetail: View {
             Text(store.workspace.account(statement.accountID)?.kind == .creditCard ? "Card amounts: charges are positive; repayments and credits are negative. Balances represent the amount owed." : "Bank amounts: money received is positive; money paid is negative.").font(.caption).foregroundStyle(.secondary)
             HSplitView {
                 VStack(alignment: .leading) {
-                    HStack { Text("\(entries.count) transactions").font(.headline); Spacer(); Toggle("Show PDF", isOn: $showPDF).toggleStyle(.checkbox); Button("Add row") { store.newEntry(statement: statement) } }
+                    HStack {
+                        Text("\(entries.count) transactions").font(.headline)
+                        Spacer()
+                        Button("Export Excel…") { store.exportStatementExcel(statementID: statement.id) }
+                        Toggle("Show PDF", isOn: $showPDF).toggleStyle(.checkbox)
+                        Button("Add row") { store.newEntry(statement: statement) }
+                    }
                     if entries.isEmpty {
                         ContentUnavailableView { Label("No transactions extracted", systemImage: "tablecells.badge.ellipsis") } description: { Text("The PDF was saved, but the earlier parser could not build its table.") } actions: { Button("Extract transactions") { store.reextract(statement) }.buttonStyle(.borderedProminent) }
                     } else { EntryTable(store: store, entries: entries, selection: $store.selectedStatementEntry) }

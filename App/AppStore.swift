@@ -89,6 +89,20 @@ import StatementCore
         let content = kind == "transactions" ? Exports.transactions(workspace) : kind == "invoices" ? Exports.invoices(workspace) : Exports.allocations(workspace)
         do { try ("\u{FEFF}" + content).write(to: url, atomically: true, encoding: .utf8); notice = "Exported \(kind)." } catch { self.error = error.localizedDescription }
     }
+    func exportStatementExcel(statementID: UUID? = nil) {
+        guard let id = statementID ?? selectedStatement, let statement = workspace.statements.first(where: { $0.id == id }) else {
+            error = "Select a statement to export."
+            return
+        }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "xlsx")!]
+        panel.nameFieldStringValue = Exports.suggestedStatementFilename(statement)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try Exports.statement(workspace, statementID: id).write(to: url)
+            notice = "Exported statement to Excel."
+        } catch { self.error = error.localizedDescription }
+    }
     func backup() {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true; panel.message = "Choose a secure destination. Backups contain financial data; use an encrypted disk."
         guard panel.runModal() == .OK, let url = panel.url else { return }
