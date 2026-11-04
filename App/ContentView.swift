@@ -128,7 +128,9 @@ struct StatementsView: View {
                 }.frame(minWidth: 250, idealWidth: 280, maxWidth: 320)
                 // Open the account folder of a newly selected statement (e.g. right after an import).
                 .onChange(of: store.selectedStatement) { _, id in
-                    if let id, let account = store.workspace.statements.first(where: { $0.id == id })?.accountID { collapsed.remove(account) }
+                    guard let id, let account = store.workspace.statements.first(where: { $0.id == id })?.accountID,
+                          collapsed.contains(account) else { return }
+                    collapsed.remove(account)
                 }
                 if let selected { StatementDetail(store: store, statement: selected).id(selected.id) }
                 else { ContentUnavailableView("Select a statement", systemImage: "doc.text.magnifyingglass") }
@@ -146,31 +148,35 @@ struct StatementsView: View {
             Label(folder.rawValue, systemImage: Self.folderIcon(folder))
         }
     }
-    private func accountFolder(_ account: Account) -> some View {
+    // A plain header row plus conditional rows, not a DisclosureGroup: inside a selectable List on macOS the outline
+    // view's own expansion state fought the programmatic "reveal the selected statement" and the selection looped.
+    @ViewBuilder private func accountFolder(_ account: Account) -> some View {
         let items: [Statement] = store.workspace.statements(forAccount: account.id)
-        return DisclosureGroup(isExpanded: expansion(account.id)) {
-            if items.isEmpty { Text("No statements yet").font(.caption).foregroundStyle(.secondary) }
-            ForEach(items) { statement in statementRow(statement).tag(statement.id) }
-        } label: {
-            accountLabel(account, count: items.count)
+        let expanded: Bool = !collapsed.contains(account.id)
+        accountLabel(account, count: items.count, expanded: expanded)
+        if expanded {
+            if items.isEmpty { Text("No statements yet").font(.caption).foregroundStyle(.secondary).padding(.leading, 22) }
+            ForEach(items) { statement in statementRow(statement).padding(.leading, 22).tag(statement.id) }
         }
     }
-    private func accountLabel(_ account: Account, count: Int) -> some View {
+    private func accountLabel(_ account: Account, count: Int, expanded: Bool) -> some View {
         let help: String = account.bank.rawValue + " · " + account.kind.rawValue
-        return HStack {
-            Label(account.name, systemImage: "folder")
-            Spacer()
-            Text(String(count)).font(.caption).foregroundStyle(.secondary).monospacedDigit()
-        }.help(help)
+        return Button {
+            if expanded { collapsed.insert(account.id) } else { collapsed.remove(account.id) }
+        } label: {
+            HStack {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption.bold()).foregroundStyle(.secondary).frame(width: 12)
+                Label(account.name, systemImage: "folder")
+                Spacer()
+                Text(String(count)).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            }.contentShape(Rectangle())
+        }.buttonStyle(.plain).help(help)
     }
     private static func folderIcon(_ folder: StatementFolder) -> String {
         switch folder {
         case .bank: return "building.columns"
         case .creditCard: return "creditcard"
         }
-    }
-    private func expansion(_ id: UUID) -> Binding<Bool> {
-        Binding(get: { !collapsed.contains(id) }, set: { expanded in if expanded { collapsed.remove(id) } else { collapsed.insert(id) } })
     }
     private func statementRow(_ statement: Statement) -> some View {
         VStack(alignment: .leading, spacing: 5) {
