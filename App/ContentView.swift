@@ -32,6 +32,10 @@ struct ContentView: View {
                 case .reports: ReportsView(store: store)
                 }
             }
+            // Pin to the top: if a section is ever taller than the window, macOS would
+            // otherwise centre it and push its top edge up under the toolbar.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .clipped()
             .navigationTitle(store.section.rawValue)
             .overlay {
                 if store.busy {
@@ -137,13 +141,14 @@ struct StatementsView: View {
                     }
                     .padding(.vertical, 6)
                 }
-                .frame(minWidth: 250, idealWidth: 280, maxWidth: 320)
+                .frame(minWidth: 250, idealWidth: 280, maxWidth: 320, maxHeight: .infinity, alignment: .top)
                 .background(Color(nsColor: .controlBackgroundColor))
                 .onAppear { revealSelection(store.selectedStatement) }
                 .onChange(of: store.selectedStatement) { _, id in revealSelection(id) }
                 if let selected { StatementDetail(store: store, statement: selected).id(selected.id) }
                 else { ContentUnavailableView("Select a statement", systemImage: "doc.text.magnifyingglass") }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
     }
     private enum BrowserRow: Identifiable {
@@ -299,7 +304,11 @@ struct StatementDetail: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack { VStack(alignment: .leading) { Text(statement.filename).font(.title3.bold()); Text(statement.profile).font(.caption).foregroundStyle(.secondary) }; Spacer(); Menu { Button("Retry with OCR…") { store.reextract(statement, forceOCR: true) }; Button("Roll back import…", role: .destructive) { store.removeStatement(statement) } } label: { Image(systemName: "ellipsis.circle") } }
-            DisclosureGroup("Import notes (\(statement.warnings.count))") { ForEach(statement.warnings, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading) } }
+            DisclosureGroup("Import notes (\(statement.warnings.count))") {
+                // A long list of notes scrolls here rather than making the statement taller than the window.
+                ScrollView { VStack(alignment: .leading, spacing: 2) { ForEach(statement.warnings, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading) } } }
+                    .frame(maxHeight: 110)
+            }
             HStack {
                 TextField("Opening HKD", text: $opening).frame(width: 125)
                 TextField("Closing HKD", text: $closing).frame(width: 125)
@@ -339,7 +348,12 @@ struct StatementDetail: View {
                     }.frame(minWidth: 240)
                 }
             }
-        }.padding(16).onAppear { refreshBalances() }
+            // Takes whatever height is left and is allowed to shrink, so the header above stays on screen.
+            .frame(maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+        }.padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .clipped()
+        .onAppear { refreshBalances() }
         .onChange(of: statement.openingBalance) { _, _ in refreshBalances() }
         .onChange(of: statement.closingBalance) { _, _ in refreshBalances() }
     }
