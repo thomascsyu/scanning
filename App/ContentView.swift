@@ -157,11 +157,11 @@ struct StatementsView: View {
     }
     private func accountLabel(_ account: Account, count: Int) -> some View {
         let help: String = account.bank.rawValue + " · " + account.kind.rawValue
-        return HStack {
-            Label(account.name, systemImage: "folder")
-            Spacer()
-            Text(String(count)).font(.caption).foregroundStyle(.secondary).monospacedDigit()
-        }.help(help)
+        // A list-row badge is the standard macOS way to show a sidebar count (HIG: Sidebars),
+        // and VoiceOver reads it together with the account name.
+        return Label(account.name, systemImage: "folder")
+            .badge(count)
+            .help(help)
     }
     private static func folderIcon(_ folder: StatementFolder) -> String {
         switch folder {
