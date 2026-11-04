@@ -91,14 +91,16 @@ final class SpreadsheetTests: XCTestCase {
         workspace.accounts = [operating, card]
         workspace.statements = [january, february]
         workspace.entries = [unreviewed, cardCharge, reviewed]
+        XCTAssertEqual(workspace.statements(in: .bank).map(\.filename), ["January.pdf"])
+        XCTAssertEqual(workspace.statements(in: .creditCard).map(\.filename), ["February.pdf"])
         XCTAssertEqual(Exports.suggestedAllTransactionsFilename(on: "2026-01-31"), "all-transactions-2026-01-31.xlsx")
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".xlsx")
         defer { try? FileManager.default.removeItem(at: url) }
-        try Exports.allTransactions(workspace).write(to: url)
+        try Exports.allTransactions(workspace, folder: .bank).write(to: url)
         let rows = try InvoiceReader.sheets(url: url)[0].rows
-        XCTAssertEqual(rows.count, 4)
+        XCTAssertEqual(rows.count, 3)
         XCTAssertEqual(rows[0].last, "Statement date")
-        XCTAssertEqual(rows[1][0], "HSBC operating")
+        XCTAssertTrue(rows.dropFirst().allSatisfy { $0[0] == "HSBC operating" })
         XCTAssertEqual(rows[1][3], "10.00")
         XCTAssertEqual(rows[1][6], "測試客戶")
         XCTAssertEqual(rows[1][14], "Yes")
@@ -106,12 +108,17 @@ final class SpreadsheetTests: XCTestCase {
         XCTAssertEqual(rows[2][3], "-10.00")
         XCTAssertEqual(rows[2][5], " =HYPERLINK(\"x\")")
         XCTAssertEqual(rows[2][14], "No")
-        XCTAssertEqual(rows[3][0], "HSBC card")
-        XCTAssertEqual(rows[3][3], "2.50")
-        XCTAssertEqual(rows[3][4], "Positive increases amount owed")
-        XCTAssertEqual(rows[3][12], "February.pdf")
-        XCTAssertEqual(rows[3][13], "2")
-        XCTAssertEqual(rows[3][15], "2026-02-28")
+        let cardURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".xlsx")
+        defer { try? FileManager.default.removeItem(at: cardURL) }
+        try Exports.allTransactions(workspace, folder: .creditCard).write(to: cardURL)
+        let cardRows = try InvoiceReader.sheets(url: cardURL)[0].rows
+        XCTAssertEqual(cardRows.count, 2)
+        XCTAssertEqual(cardRows[1][0], "HSBC card")
+        XCTAssertEqual(cardRows[1][3], "2.50")
+        XCTAssertEqual(cardRows[1][4], "Positive increases amount owed")
+        XCTAssertEqual(cardRows[1][12], "February.pdf")
+        XCTAssertEqual(cardRows[1][13], "2")
+        XCTAssertEqual(cardRows[1][15], "2026-02-28")
         let statementURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".xlsx")
         defer { try? FileManager.default.removeItem(at: statementURL) }
         try Exports.statement(workspace, statementID: january.id).write(to: statementURL)
@@ -126,7 +133,7 @@ final class SpreadsheetTests: XCTestCase {
         _ = try archive.extract(sheetEntry) { sheetXML.append($0) }
         let xml = String(decoding: sheetXML, as: UTF8.self)
         XCTAssertTrue(xml.contains("<v>10.00</v>"))
-        XCTAssertTrue(xml.contains("<v>2.50</v>"))
+        XCTAssertFalse(xml.contains("February.pdf"))
         XCTAssertTrue(xml.contains("s=\"1\""))
         XCTAssertTrue(xml.contains("ySplit=\"1\""))
         var styles = Data()
@@ -135,7 +142,7 @@ final class SpreadsheetTests: XCTestCase {
         XCTAssertTrue(String(decoding: styles, as: UTF8.self).contains("formatCode=\"0.00\""))
         let emptyURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".xlsx")
         defer { try? FileManager.default.removeItem(at: emptyURL) }
-        try Exports.allTransactions(Workspace()).write(to: emptyURL)
+        try Exports.allTransactions(Workspace(), folder: .creditCard).write(to: emptyURL)
         XCTAssertEqual(try InvoiceReader.sheets(url: emptyURL)[0].rows.count, 1)
     }
 }
