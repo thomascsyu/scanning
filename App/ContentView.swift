@@ -124,28 +124,7 @@ struct StatementsView: View {
         } else {
             HSplitView {
                 List(selection: $store.selectedStatement) {
-                    ForEach(StatementFolder.allCases) { folder in
-                        SwiftUI.Section {
-                            let accounts = store.workspace.accounts(in: folder)
-                            if accounts.isEmpty { Text("No accounts yet").font(.caption).foregroundStyle(.secondary) }
-                            // One sub-folder per account, so each bank account and card keeps its own statements.
-                            ForEach(accounts) { account in
-                                let items = store.workspace.statements(forAccount: account.id)
-                                DisclosureGroup(isExpanded: expansion(account.id)) {
-                                    if items.isEmpty { Text("No statements yet").font(.caption).foregroundStyle(.secondary) }
-                                    ForEach(items) { statement in statementRow(statement).tag(statement.id) }
-                                } label: {
-                                    HStack {
-                                        Label(account.name, systemImage: "folder")
-                                        Spacer()
-                                        Text("\(items.count)").font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                                    }.help("\(account.bank.rawValue) · \(account.kind.rawValue)")
-                                }
-                            }
-                        } header: {
-                            Label(folder.rawValue, systemImage: folder == .bank ? "building.columns" : "creditcard")
-                        }
-                    }
+                    ForEach(StatementFolder.allCases) { folder in folderSection(folder) }
                 }.frame(minWidth: 250, idealWidth: 280, maxWidth: 320)
                 // Open the account folder of a newly selected statement (e.g. right after an import).
                 .onChange(of: store.selectedStatement) { _, id in
@@ -154,6 +133,40 @@ struct StatementsView: View {
                 if let selected { StatementDetail(store: store, statement: selected).id(selected.id) }
                 else { ContentUnavailableView("Select a statement", systemImage: "doc.text.magnifyingglass") }
             }
+        }
+    }
+    // The sidebar is split into small helpers so the compiler can type-check it quickly.
+    @ViewBuilder private func folderSection(_ folder: StatementFolder) -> some View {
+        let accounts: [Account] = store.workspace.accounts(in: folder)
+        SwiftUI.Section {
+            if accounts.isEmpty { Text("No accounts yet").font(.caption).foregroundStyle(.secondary) }
+            // One sub-folder per account, so each bank account and card keeps its own statements.
+            ForEach(accounts) { account in accountFolder(account) }
+        } header: {
+            Label(folder.rawValue, systemImage: Self.folderIcon(folder))
+        }
+    }
+    private func accountFolder(_ account: Account) -> some View {
+        let items: [Statement] = store.workspace.statements(forAccount: account.id)
+        return DisclosureGroup(isExpanded: expansion(account.id)) {
+            if items.isEmpty { Text("No statements yet").font(.caption).foregroundStyle(.secondary) }
+            ForEach(items) { statement in statementRow(statement).tag(statement.id) }
+        } label: {
+            accountLabel(account, count: items.count)
+        }
+    }
+    private func accountLabel(_ account: Account, count: Int) -> some View {
+        let help: String = account.bank.rawValue + " · " + account.kind.rawValue
+        return HStack {
+            Label(account.name, systemImage: "folder")
+            Spacer()
+            Text(String(count)).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+        }.help(help)
+    }
+    private static func folderIcon(_ folder: StatementFolder) -> String {
+        switch folder {
+        case .bank: return "building.columns"
+        case .creditCard: return "creditcard"
         }
     }
     private func expansion(_ id: UUID) -> Binding<Bool> {
