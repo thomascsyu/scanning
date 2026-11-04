@@ -152,12 +152,24 @@ struct RuleEditor: View {
 struct ReportsView: View {
     @Bindable var store: AppStore
     @State private var month = String(Day.today.prefix(7))
-    var entries: [Entry] { store.workspace.entries.filter { $0.reviewed && $0.type != .transfer && $0.date.hasPrefix(month) } }
+    var monthValid: Bool { Day.validMonth(month) }
+    var reportMonth: String { monthValid ? month.trimmingCharacters(in: .whitespacesAndNewlines) : "" }
+    var entries: [Entry] {
+        guard monthValid else { return [] }
+        return store.workspace.entries.filter { $0.reviewed && $0.type != .transfer && $0.date.hasPrefix(reportMonth) }
+    }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 Text("Monthly overview").font(.title2.bold())
-                HStack { TextField("Month (YYYY-MM)", text: $month).frame(width: 160); Text("Reviewed transactions only · Transfers excluded").font(.caption).foregroundStyle(.secondary) }
+                HStack {
+                    TextField("Month (YYYY-MM)", text: $month).frame(width: 160)
+                    if !monthValid && !month.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text("Use YYYY-MM (for example \(String(Day.today.prefix(7)))).").font(.caption).foregroundStyle(.red)
+                    } else {
+                        Text("Reviewed transactions only · Transfers excluded").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 HStack(spacing: 16) {
                     metric("Money received", value: entries.filter { store.workspace.incoming($0) > 0 }.reduce(0) { $0 + store.workspace.incoming($1) })
                     metric("Money paid", value: entries.filter { store.workspace.incoming($0) < 0 }.reduce(0) { $0 - store.workspace.incoming($1) })

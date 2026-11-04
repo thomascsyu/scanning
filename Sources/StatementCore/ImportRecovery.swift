@@ -8,8 +8,8 @@ public extension ExtractedPDF {
     }
     var declaredTransactionCount: Int? {
         func count(_ label: String) -> Int? {
-            let regex = try! NSRegularExpression(pattern: label + #"\s+(\d+)\s+HKD\b"#, options: .caseInsensitive)
-            guard let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else { return nil }
+            guard let regex = try? NSRegularExpression(pattern: NSRegularExpression.escapedPattern(for: label) + #"\s+(\d+)\s+HKD\b"#, options: .caseInsensitive),
+                  let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else { return nil }
             return Int((text as NSString).substring(with: match.range(at: 1)))
         }
         guard let deposits = count("Deposits"), let withdrawals = count("Withdrawals"), deposits <= 50_000, withdrawals <= 50_000 else { return nil }
