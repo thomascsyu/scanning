@@ -48,7 +48,7 @@ struct ContentView: View {
                 Label("Statement Manager", systemImage: "building.columns.fill").font(.headline)
                 Text(store.workspace.businessName.isEmpty ? "Your local financial workspace" : store.workspace.businessName).font(.caption).foregroundStyle(.secondary)
             }.padding(18)
-            List(Section.allCases, selection: $store.section) { item in Label(item.rawValue, systemImage: item.icon).tag(item) }
+            List(SidebarSection.allCases, selection: $store.section) { item in Label(item.rawValue, systemImage: item.icon).tag(item) }
             VStack(alignment: .leading, spacing: 8) {
                 Label(store.ai.enabled ? "Local storage · AI enabled" : "Local processing · AI off", systemImage: "lock.shield").font(.caption).foregroundStyle(.secondary)
                 Text("HKD · HSBC & Bank of China").font(.caption2).foregroundStyle(.secondary)
@@ -74,6 +74,10 @@ struct ContentView: View {
             }
             content()
         }
+        // Pin to the top: if a section is taller than the window, macOS would
+        // otherwise centre it and push its top edge up under the toolbar.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .clipped()
         .navigationTitle(store.section.rawValue)
         .overlay {
             if store.busy {
@@ -164,16 +168,96 @@ struct StatementDetailColumn: View {
 }
 struct StatementsView: View {
     @Bindable var store: AppStore
-    /// Account folders the user collapsed; everything starts expanded.
-    @State private var collapsed: Set<UUID> = []
+    /// Folders and account groups the user collapsed. Both start expanded.
+    @State private var collapsedFolders: Set<StatementFolder> = []
+    @State private var collapsedAccounts: Set<UUID> = []
     /// Middle column of the Statements layout: one folder per bank account or card.
     var body: some View {
-        List(selection: $store.selectedStatement) {
-            ForEach(StatementFolder.allCases) { folder in folderSection(folder) }
+        // Avoid SwiftUI `List` on macOS: it bridges to NSOutlineView and can
+        // activate ListHeader.left == ListRow.left across recycled row views.
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(browserRows) { row in browserRow(row) }
+            }
+            .padding(.vertical, 6)
         }
-        // Open the account folder of a newly selected statement (e.g. right after an import).
-        .onChange(of: store.selectedStatement) { _, id in
-            if let id, let account = store.workspace.statements.first(where: { $0.id == id })?.accountID { collapsed.remove(account) }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .onAppear { revealSelection(store.selectedStatement) }
+        .onChange(of: store.selectedStatement) { _, id in revealSelection(id) }
+    }
+    private enum BrowserRow: Identifiable {
+        case folder(StatementFolder)
+        case noAccounts(StatementFolder)
+        case account(UUID)
+        case noStatements(UUID)
+        case statement(UUID)
+        var id: String {
+            switch self {
+            case .folder(let folder): return "folder-\(folder.rawValue)"
+            case .noAccounts(let folder): return "no-accounts-\(folder.rawValue)"
+            case .account(let id): return "account-\(id.uuidString)"
+            case .noStatements(let id): return "no-statements-\(id.uuidString)"
+            case .statement(let id): return "statement-\(id.uuidString)"
+            }
+        }
+    }
+    /// One row per outline entry, so nothing asks the outline view to reload children.
+    private var browserRows: [BrowserRow] {
+        var rows: [BrowserRow] = []
+        for folder in StatementFolder.allCases {
+            rows.append(.folder(folder))
+            guard !collapsedFolders.contains(folder) else { continue }
+            let accounts = store.workspace.accounts(in: folder)
+            if accounts.isEmpty {
+                rows.append(.noAccounts(folder))
+                continue
+            }
+            for account in accounts {
+                rows.append(.account(account.id))
+                guard !collapsedAccounts.contains(account.id) else { continue }
+                let statements = store.workspace.statements(forAccount: account.id)
+                if statements.isEmpty { rows.append(.noStatements(account.id)) }
+                else { statements.forEach { rows.append(.statement($0.id)) } }
+            }
+        }
+        return rows
+    }
+    @ViewBuilder private func browserRow(_ row: BrowserRow) -> some View {
+        switch row {
+        case .folder(let folder):
+            disclosure(expanded: !collapsedFolders.contains(folder), indent: 0, action: { toggle(folder) }) {
+                Label(folder.rawValue, systemImage: Self.folderIcon(folder)).font(.subheadline.weight(.semibold))
+            }
+        case .noAccounts:
+            placeholder("No accounts yet", indent: 28)
+        case .account(let id):
+            if let account = store.workspace.account(id) {
+                disclosure(expanded: !collapsedAccounts.contains(id), indent: 16, action: { toggle(id) }) {
+                    accountLabel(account, count: store.workspace.statements(forAccount: id).count)
+                }
+            }
+        case .noStatements:
+            placeholder("No statements yet", indent: 44)
+        case .statement(let id):
+            if let statement = store.workspace.statements.first(where: { $0.id == id }) {
+                statementButton(statement)
+            }
+        }
+    }
+    private func disclosure<Label: View>(expanded: Bool, indent: CGFloat, action: @escaping () -> Void, @ViewBuilder label: () -> Label) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 12)
+                    .accessibilityHidden(true)
+                label()
+            }
+            .padding(.leading, indent)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
@@ -188,7 +272,7 @@ struct StatementsView: View {
     private func toggle(_ account: UUID) {
         if collapsedAccounts.contains(account) { collapsedAccounts.remove(account) } else { collapsedAccounts.insert(account) }
     }
-    /// Expand after the selection update. Doing it inline re-enters `reloadItem:reloadChildren:` on a detached row.
+    /// Expand the folder and account that own a newly selected statement, such as right after an import.
     private func revealSelection(_ id: UUID?) {
         guard let id, let accountID = store.workspace.statements.first(where: { $0.id == id })?.accountID else { return }
         let folder: StatementFolder?
