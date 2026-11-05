@@ -6,7 +6,9 @@ struct PDFImportView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var index = 0
     @State private var accountID: UUID?
-    @State private var periodEnd = Day.today
+    /// Left empty until the PDF supplies it or the user types it: undated rows ("15 DEC") take their year from it,
+    /// so defaulting to today would silently misdate an older statement.
+    @State private var periodEnd = ""
     @State private var periodStart = ""
     @State private var password = ""
     @State private var forceOCR = false
@@ -40,7 +42,9 @@ struct PDFImportView: View {
                 }
                 if let parsed {
                     Text("\(parsed.entries.count) candidate transactions").font(.headline)
-                    if parsed.entries.isEmpty {
+                    if !Day.valid(periodEnd) {
+                        Text("The statement date was not found in the PDF. Enter the period end (YYYY-MM-DD) printed on the statement to build the table; transaction years are taken from it.").foregroundStyle(.orange)
+                    } else if parsed.entries.isEmpty {
                         Text("No transaction rows could be extracted. The PDF has not been converted into a table. Check the account, or retry with OCR if the PDF text is damaged.").foregroundStyle(.orange)
                         Toggle("Save the PDF for manual transaction entry", isOn: $allowEmptyImport)
                     } else {
@@ -163,7 +167,7 @@ struct PDFImportView: View {
         else {
             // Each file starts clean: a date that is not detected must not silently inherit the previous file's period.
             index += 1; extracted = nil; parsed = nil; password = ""; message = nil; replaceExisting = false; accountID = nil
-            periodEnd = Day.today; periodStart = ""; forceOCR = false; allowEmptyImport = false; draftID = UUID(); read()
+            periodEnd = ""; periodStart = ""; forceOCR = false; allowEmptyImport = false; draftID = UUID(); read()
         }
     }
 }

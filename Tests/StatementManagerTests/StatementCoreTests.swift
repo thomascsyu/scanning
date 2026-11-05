@@ -280,4 +280,14 @@ final class StatementCoreTests: XCTestCase {
         let start = Date(); w.flagDuplicates(); XCTAssertLessThan(Date().timeIntervalSince(start), 5)
         XCTAssertFalse(w.entries.contains(where: \.duplicateCandidate))
     }
+    func testUnreferencedOriginalPDFsAreRemoved() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let kept = UUID().uuidString + ".pdf", orphan = UUID().uuidString + ".pdf", foreign = "Notes.pdf"
+        for name in [kept, orphan, foreign] { try Data("x".utf8).write(to: folder.appendingPathComponent(name)) }
+        XCTAssertEqual(OriginalsStore.removeUnreferenced(in: folder, referenced: [kept]), 1)
+        let remaining = Set(try FileManager.default.contentsOfDirectory(atPath: folder.path))
+        XCTAssertEqual(remaining, [kept, foreign])
+    }
 }

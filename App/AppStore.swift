@@ -39,6 +39,9 @@ import StatementCore
         workspace = try repository.load()
         if ProcessInfo.processInfo.arguments.contains("--demo") && workspace.businessName.isEmpty { workspace = try DemoWorkspace.create(documents: documents); try repository.save(workspace) }
         selectedStatement = workspace.statements.first?.id
+        // Rolled-back or replaced statements keep their PDF for Undo during a session. Undo history is not kept
+        // across launches, so those copies are no longer needed and are deleted rather than kept indefinitely.
+        OriginalsStore.removeUnreferenced(in: documents, referenced: Set(workspace.statements.map(\.storedFilename)))
     }
     func change(_ label: String, _ action: (inout Workspace) throws -> Void) {
         do {
@@ -155,7 +158,7 @@ import StatementCore
         guard panel.runModal() == .OK, let source = panel.url else { return }
         do {
             let next = try WorkspaceBackup.read(source)
-            let alert = NSAlert(); alert.messageText = "Replace the current workspace?"; alert.informativeText = "The selected backup will replace all current records. You can undo this replacement during this session."; alert.addButton(withTitle: "Restore backup"); alert.addButton(withTitle: "Cancel")
+            let alert = NSAlert(); alert.messageText = "Replace the current workspace?"; alert.informativeText = "The selected backup will replace all current records. You can undo this replacement until you quit; the replaced PDFs are deleted the next time the app opens."; alert.addButton(withTitle: "Restore backup"); alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
             // Remap filenames so restoring cannot overwrite originals needed by Undo.
             var restored = next, copied: [URL] = []
@@ -176,7 +179,7 @@ import StatementCore
         } catch { self.error = error.localizedDescription }
     }
     func removeStatement(_ statement: Statement) {
-        let alert = NSAlert(); alert.messageText = "Roll back this statement import?"; alert.informativeText = "Its transactions and payment allocations will be removed. Original PDFs are retained locally for Undo. Invoices remain in the workspace."; alert.addButton(withTitle: "Roll back import"); alert.addButton(withTitle: "Cancel")
+        let alert = NSAlert(); alert.messageText = "Roll back this statement import?"; alert.informativeText = "Its transactions and payment allocations will be removed. The original PDF is kept until you quit, so you can Undo; it is deleted the next time the app opens. Invoices remain in the workspace."; alert.addButton(withTitle: "Roll back import"); alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         change("Roll back statement import") { $0.removeStatement(statement.id) }; selectedStatement = nil; selectedStatementEntry = nil
     }
