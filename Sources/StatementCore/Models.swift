@@ -233,7 +233,9 @@ public enum Money {
         }
         var exact = decimal * 100, rounded = Decimal()
         NSDecimalRound(&rounded, &exact, 0, .plain)
-        let tolerance = max(Decimal(string: "0.000001")!, abs(rounded) * Decimal(string: "0.000000000001")!)
+        // Relative error grows with the amount; cap it below a tenth of a cent so genuine
+        // third decimal places are rejected even near the supported monetary limit.
+        let tolerance = min(Decimal(string: "0.01")!, max(Decimal(string: "0.000001")!, abs(rounded) * Decimal(string: "0.000000000001")!))
         guard abs(exact - rounded) <= tolerance else {
             throw LedgerError.invalid("Enter a valid HKD amount with no more than two decimal places.")
         }
