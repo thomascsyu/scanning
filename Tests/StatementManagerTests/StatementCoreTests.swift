@@ -241,6 +241,14 @@ final class StatementCoreTests: XCTestCase {
         let invoices = try InvoiceReader.invoices(sheet: sheet, mapping: InvoiceReader.suggestedMapping(headers: sheet.rows[0]))
         XCTAssertEqual(invoices.first?.total, 132000)
     }
+    func testSpreadsheetPrecisionAtLargeAmounts() throws {
+        for value in ["10000000000.005", "-10000000000.005", "999999999999.999", "10000000000.001", "1.0000000000005E10"] {
+            XCTAssertThrowsError(try Money.parseSpreadsheet(value), value)
+        }
+        XCTAssertEqual(try Money.parseSpreadsheet("10000000000.01"), 1_000_000_000_001)
+        XCTAssertEqual(try Money.parseSpreadsheet("10000000000.0100002"), 1_000_000_000_001)
+        XCTAssertEqual(try Money.parseSpreadsheet("1000000000000"), 100_000_000_000_000)
+    }
     func testCashSummaryDoesNotDoubleCountCardRepayments() {
         var w = Workspace()
         let bank = Account(name: "Bank", bank: .hsbc, kind: .bank), card = Account(name: "Card", bank: .hsbc, kind: .creditCard)

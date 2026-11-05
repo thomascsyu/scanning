@@ -1,5 +1,13 @@
 # Validation record
 
+## Current review fixes (Mac validation pending)
+
+- Multi-file import completes the current commit's busy state before starting the next PDF read. Read, Skip, and Import also reject calls while busy; stale preview parsing is cancelled on reread or file advance.
+- Cancel and Escape are disabled during PDF reads and commits, matching the sheet's existing interactive-dismiss restriction. They remain available when the operation finishes or fails.
+- Spreadsheet floating-point tolerance is capped at 0.01 cents. Added regression coverage for large positive/negative values, scientific notation, valid cent amounts, and small representation artifacts.
+- `git diff --check` passed. The test script cannot run in this Linux environment because Swift is not installed.
+- On a Mac, run `./scripts/test.sh` and the Release build. Import at least three synthetic PDFs with distinct transactions, including a slow OCR file: after importing the first, verify Read/Skip/Import/Cancel and Escape remain unavailable throughout the next read; then skip a file and confirm each saved table and original PDF belong together. During a slow commit/replacement, verify Cancel/Escape cannot dismiss the sheet; after a read or save error, verify controls recover and Cancel dismisses without another save.
+
 Validated on this Apple silicon Mac, macOS 26.6.2, with Xcode 27.0 / Swift 6.4.
 
 ## Passed

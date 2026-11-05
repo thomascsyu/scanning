@@ -58,7 +58,7 @@ struct PDFImportView: View {
 
                 }
             }
-            HStack { Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction); Spacer(); Button("Skip file") { next() }.disabled(busy); Button((parsed?.entries.isEmpty ?? true) ? "Save PDF for manual entry" : "Import \(parsed?.entries.count ?? 0) transactions") { commit() }.buttonStyle(.borderedProminent).disabled(extracted == nil || account == nil || !Day.valid(periodEnd) || busy || (needsReplacementConfirmation && !replaceExisting) || ((parsed?.entries.isEmpty ?? true) && !allowEmptyImport)) }
+            HStack { Button("Cancel") { if !busy { dismiss() } }.keyboardShortcut(.cancelAction).disabled(busy); Spacer(); Button("Skip file") { next() }.disabled(busy); Button((parsed?.entries.isEmpty ?? true) ? "Save PDF for manual entry" : "Import \(parsed?.entries.count ?? 0) transactions") { commit() }.buttonStyle(.borderedProminent).disabled(extracted == nil || account == nil || !Day.valid(periodEnd) || busy || (needsReplacementConfirmation && !replaceExisting) || ((parsed?.entries.isEmpty ?? true) && !allowEmptyImport)) }
         }.padding(24).frame(width: 760)
         .interactiveDismissDisabled(busy)
         .onAppear {
@@ -84,7 +84,9 @@ struct PDFImportView: View {
         }
     }
     private func read() {
-        guard let url else { return }; busy = true; message = nil; extracted = nil; parsed = nil
+        guard !busy, let url else { return }
+        reparseTask?.cancel()
+        busy = true; message = nil; extracted = nil; parsed = nil
         let suppliedPassword = password, ocr = forceOCR
         Task {
             do {
@@ -106,11 +108,13 @@ struct PDFImportView: View {
         }
     }
     private func commit() {
-        guard let url, let extracted, let account else { return }
+        guard !busy, let url, let extracted, let account else { return }
         busy = true; message = nil
         let suppliedPeriodStart = periodStart, suppliedPeriodEnd = periodEnd, allowEmpty = allowEmptyImport, isReplace = existing != nil
         Task {
-            defer { busy = false }
+            var advance = false
+            // Finish this operation before starting the next read, which owns its own busy state.
+            defer { busy = false; if advance { next() } }
             do {
                 guard suppliedPeriodStart.isEmpty || (Day.valid(suppliedPeriodStart) && suppliedPeriodStart <= suppliedPeriodEnd) else {
                     throw LedgerError.invalid("Enter a valid period start no later than the end.")
@@ -158,11 +162,13 @@ struct PDFImportView: View {
                 if store.workspace == snapshot { store.change(label) { $0 = prepared } }
                 else { store.change(label) { try $0.commitParsedStatement(statement, parseResult: result) } }
                 guard store.error == nil else { discardCopy(); return }
-                store.selectedStatement = statement.id; store.section = .statements; next()
+                store.selectedStatement = statement.id; store.section = .statements; advance = true
             } catch { message = error.localizedDescription }
         }
     }
     private func next() {
+        guard !busy else { return }
+        reparseTask?.cancel()
         if index + 1 >= store.importURLs.count { dismiss() }
         else {
             // Each file starts clean: a date that is not detected must not silently inherit the previous file's period.
