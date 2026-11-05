@@ -23,6 +23,7 @@ import StatementCore
             CommandGroup(after: .newItem) {
                 Button("Import Statements…") { store?.openPDFs() }.keyboardShortcut("i").disabled(store?.workspace.accounts.isEmpty != false)
                 Button("Import Invoice Register…") { store?.openInvoices() }.keyboardShortcut("i", modifiers: [.command, .shift])
+                Button("Remove Statement…") { store?.removeSelectedStatement() }.disabled(store?.selectedStatement == nil)
                 Divider()
                 Button("Export Statement to Excel…") { store?.exportStatementExcel() }.disabled(store?.selectedStatement == nil)
                 Button("Export All Transactions to Excel…") { store?.exportAllTransactionsExcel() }

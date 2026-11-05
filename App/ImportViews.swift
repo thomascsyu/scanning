@@ -158,7 +158,7 @@ struct PDFImportView: View {
                 if store.workspace == snapshot { store.change(label) { $0 = prepared } }
                 else { store.change(label) { try $0.commitParsedStatement(statement, parseResult: result) } }
                 guard store.error == nil else { discardCopy(); return }
-                store.selectedStatement = statement.id; store.section = .statements; next()
+                store.selectedCard = nil; store.selectedStatement = statement.id; store.section = .statements; next()
             } catch { message = error.localizedDescription }
         }
     }

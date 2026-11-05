@@ -46,4 +46,30 @@ final class HSBCCardTests: XCTestCase {
         XCTAssertEqual(StatementParser.transactionDate("28 MAR 2025", end: "2025-03-28"), "2025-03-28")
         XCTAssertEqual(StatementParser.transactionDate("30DEC", end: "2025-01-28"), "2024-12-30")
     }
+    func testEachRowRecordsItsCardNumber() throws {
+        let second = [
+            row("4512 0000 1111 2222 CHAN TAI MAN", 470),
+            row("05MAR 05MAR UBER *TRIP HONG KONG HK 88.00", 458),
+        ]
+        let r = parse(statement.filter { $0.region.y >= 480 } + second + statement.filter { $0.region.y < 480 })
+        XCTAssertEqual(r.entries.map(\.cardNumber), [nil, nil, "1617", "1617", "1617", "1617", "2222"])
+        // Only the last four digits are kept.
+        XCTAssertFalse(r.entries.contains { ($0.cardNumber ?? "").count != 4 && $0.cardNumber != nil })
+        let statementID = UUID()
+        var w = Workspace(); w.accounts = [account]
+        w.statements = [Statement(accountID: account.id, filename: "card.pdf", storedFilename: "card.pdf", hash: "h")]
+        w.statements[0].id = statementID
+        w.entries = r.entries.map { var e = $0; e.statementID = statementID; return e }
+        XCTAssertEqual(w.cardNumbers(forAccount: account.id), ["1617", "2222"])
+        XCTAssertEqual(w.cardNumbers(inStatement: statementID), ["1617", "2222"])
+        XCTAssertEqual(w.statements(forAccount: account.id, card: "2222").map(\.id), [statementID])
+        XCTAssertTrue(w.statements(forAccount: account.id, card: "9999").isEmpty)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".xlsx")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Exports.allTransactions(w, accountID: account.id, card: "2222").write(to: url)
+        let rows = try InvoiceReader.sheets(url: url)[0].rows
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(rows[0][14], "Card")
+        XCTAssertEqual(rows[1][14], "•••• 2222")
+    }
 }

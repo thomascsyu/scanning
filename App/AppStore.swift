@@ -12,6 +12,10 @@ import StatementCore
     var section: SidebarSection = .statements
     var selectedStatement: UUID?
     var selectedStatementEntry: UUID?
+    /// Card filter for the selected statement: nil shows every row, a card's last four digits shows that card,
+    /// and `AppStore.accountLevelRows` shows rows that belong to no card (repayments, finance charges).
+    var selectedCard: String?
+    static let accountLevelRows = ""
     var selectedTransactionEntry: UUID?
     var selectedInvoice: UUID?
     var importURLs: [URL] = []
@@ -133,6 +137,13 @@ import StatementCore
                     // Never overwrite an earlier export from the same day.
                     let file = Self.uniqueFile(in: directory, filename: Exports.suggestedAllTransactionsFilename())
                     try Exports.allTransactions(workspace, accountID: account.id).write(to: file)
+                    // Each card of a multi-card statement also gets its own folder inside the account folder.
+                    for card in workspace.cardNumbers(forAccount: account.id) {
+                        let cardDirectory = directory.appendingPathComponent(Exports.cardFolderName(card), isDirectory: true)
+                        try FileManager.default.createDirectory(at: cardDirectory, withIntermediateDirectories: true)
+                        let cardFile = Self.uniqueFile(in: cardDirectory, filename: Exports.suggestedAllTransactionsFilename())
+                        try Exports.allTransactions(workspace, accountID: account.id, card: card).write(to: cardFile)
+                    }
                     accountsExported += 1; rows += count
                 }
             }
@@ -178,10 +189,30 @@ import StatementCore
             if self.error != nil { discardCopies() }
         } catch { self.error = error.localizedDescription }
     }
+    /// Remove an imported statement with all of its transactions, after a confirmation that says exactly what goes.
     func removeStatement(_ statement: Statement) {
-        let alert = NSAlert(); alert.messageText = "Roll back this statement import?"; alert.informativeText = "Its transactions and payment allocations will be removed. The original PDF is kept until you quit, so you can Undo; it is deleted the next time the app opens. Invoices remain in the workspace."; alert.addButton(withTitle: "Roll back import"); alert.addButton(withTitle: "Cancel")
+        let rows = workspace.entries.filter { $0.statementID == statement.id }
+        let ids = Set(rows.map(\.id))
+        let allocations = workspace.allocations.filter { ids.contains($0.entryID) }.count
+        let reviewed = rows.filter(\.reviewed).count
+        var details = "\(rows.count) transaction\(rows.count == 1 ? "" : "s") (\(reviewed) reviewed) will be removed."
+        if allocations > 0 { details += " \(allocations) invoice payment allocation\(allocations == 1 ? "" : "s") will be reversed, so those invoices show as outstanding again." }
+        if statement.reconciled { details += " This statement is marked reconciled." }
+        details += " Invoices stay in the workspace. You can Undo until you quit; the stored PDF copy is deleted the next time the app opens."
+        let alert = NSAlert(); alert.alertStyle = .warning
+        alert.messageText = "Remove “\(statement.filename)”?"; alert.informativeText = details
+        alert.addButton(withTitle: "Remove Statement"); alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.hasDestructiveAction = true
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        change("Roll back statement import") { $0.removeStatement(statement.id) }; selectedStatement = nil; selectedStatementEntry = nil
+        error = nil
+        change("Remove statement “\(statement.filename)”") { $0.removeStatement(statement.id) }
+        guard error == nil else { return }
+        if selectedStatement == statement.id { selectedStatement = nil; selectedStatementEntry = nil; selectedCard = nil }
+        notice = "Removed “\(statement.filename)” and its \(rows.count) transaction\(rows.count == 1 ? "" : "s"). Use Undo to restore it."
+    }
+    func removeSelectedStatement() {
+        guard let id = selectedStatement, let statement = workspace.statements.first(where: { $0.id == id }) else { return }
+        removeStatement(statement)
     }
     func applyRulesInBackground() {
         let snapshot = workspace
@@ -246,7 +277,7 @@ import StatementCore
                     }
                     change("Recover empty PDF import") { $0 = candidate }
                     if error == nil {
-                        selectedStatement = statement.id
+                        selectedCard = nil; selectedStatement = statement.id
                         notice = "Recovered \(candidate.entries.filter { $0.statementID == statement.id }.count) transactions from your PDF. The count and totals match; please review the table."
                     }
                 }
@@ -267,7 +298,10 @@ import StatementCore
         }
     }
     func newEntry(statement: Statement) {
-        editingEntry = Entry(statementID: statement.id, accountID: statement.accountID, date: statement.periodEnd.isEmpty ? Day.today : statement.periodEnd, amount: 0, description: "")
+        var entry = Entry(statementID: statement.id, accountID: statement.accountID, date: statement.periodEnd.isEmpty ? Day.today : statement.periodEnd, amount: 0, description: "")
+        // A row added while one card is shown belongs to that card.
+        if let card = selectedCard, card != Self.accountLevelRows { entry.cardNumber = card }
+        editingEntry = entry
     }
 }
 enum SidebarSection: String, CaseIterable, Identifiable {

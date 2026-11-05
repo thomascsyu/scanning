@@ -88,3 +88,12 @@ These changes were made in a Linux environment without the macOS SDK, so neither
 - The import sheet no longer pre-fills the period end with today's date. When the PDF's statement date is not detected, the table waits until the period end is entered, because undated rows ("15 DEC") take their year from it.
 - PDFs of rolled-back or replaced statements are still kept for Undo during a session, and are now deleted the next time the app opens instead of remaining in Application Support indefinitely. Only the app's own `<UUID>.pdf` copies that no statement references are removed.
 - Two new synthetic tests (`SpreadsheetTests.swift`, `StatementCoreTests.swift`). Run `./scripts/test.sh`, the Release build, and `--self-check` on the Mac before installing.
+
+## Version 0.8: remove statements, one folder per card (not yet built or tested on a Mac)
+
+- Restored `App/ContentView.swift` to its last buildable state (`eb9affc`). The later merge into `main` had interleaved two versions of the statement browser (`StatementsView` was missing), so `main` did not compile.
+- **Remove Statement…** is now a visible button in the statement header, a right-click item on every statement in the list, an item in the statement's ⋯ menu, and **File → Remove Statement…**. The confirmation names the file and states how many transactions (and reviewed rows) and invoice payment allocations will be removed, and whether the statement was reconciled. Undo restores it during the session.
+- Card statements that list several cards (HSBC business cards print a `5592 4033 3870 1617 NAME` heading per card) now record each row's card as its last four digits only. Under **Credit card statements → account**, each card number has its own folder (`Card •••• 1617`); opening a statement from a card folder shows that card's rows, and a Card picker switches between all cards, each card, and account-level rows (repayments, finance charges). Reconciliation always uses every row of the statement.
+- **All transactions to Excel** additionally writes `Credit card statements/<account>/Card 1617/all-transactions-<date>.xlsx` for each card. Workbooks and the reviewed CSV get a **Card** column only when card numbers are present, so bank exports keep their layout.
+- Parser version `0.5-card-numbers`. Card statements imported earlier have no card numbers: open each one and choose **Retry with OCR…**, or re-import it with replacement, to file its rows by card. Re-extraction replaces corrections, so do it before reviewing.
+- One new synthetic test in `HSBCCardTests.swift`.

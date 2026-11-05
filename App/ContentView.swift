@@ -162,24 +162,124 @@ struct StatementDetailColumn: View {
         if let selected = store.workspace.statements.first(where: { $0.id == store.selectedStatement }) {
             StatementDetail(store: store, statement: selected).id(selected.id)
         } else {
-            HSplitView {
-                List(selection: $store.selectedStatement) {
-                    ForEach(StatementFolder.allCases) { folder in folderSection(folder) }
-                }.frame(minWidth: 250, idealWidth: 280, maxWidth: 320)
-                // Open the account folder of a newly selected statement (e.g. right after an import).
-                .onChange(of: store.selectedStatement) { _, id in
-                    guard let id, let account = store.workspace.statements.first(where: { $0.id == id })?.accountID,
-                          collapsed.contains(account) else { return }
-                    collapsed.remove(account)
+            ContentUnavailableView("Select a statement", systemImage: "doc.text.magnifyingglass")
+        }
+    }
+}
+struct StatementsView: View {
+    @Bindable var store: AppStore
+    /// Folders and account groups the user collapsed. Both start expanded.
+    @State private var collapsedFolders: Set<StatementFolder> = []
+    @State private var collapsedAccounts: Set<UUID> = []
+    /// Collapsed card folders, keyed by `cardKey(account, card)`. Card folders also start expanded.
+    @State private var collapsedCards: Set<String> = []
+    /// Middle column of the Statements layout: one folder per bank account or card.
+    var body: some View {
+        // Avoid SwiftUI `List` on macOS: it bridges to NSOutlineView and can
+        // activate ListHeader.left == ListRow.left across recycled row views.
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(browserRows) { row in browserRow(row) }
+            }
+            .padding(.vertical, 6)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .onAppear { revealSelection(store.selectedStatement) }
+        .onChange(of: store.selectedStatement) { _, id in revealSelection(id) }
+    }
+    private enum BrowserRow: Identifiable {
+        case folder(StatementFolder)
+        case noAccounts(StatementFolder)
+        case account(UUID)
+        case noStatements(UUID)
+        case statement(UUID)
+        /// One folder per card number (last four digits) on a multi-card statement.
+        case card(UUID, String)
+        case cardStatement(UUID, String)
+        var id: String {
+            switch self {
+            case .folder(let folder): return "folder-\(folder.rawValue)"
+            case .noAccounts(let folder): return "no-accounts-\(folder.rawValue)"
+            case .account(let id): return "account-\(id.uuidString)"
+            case .noStatements(let id): return "no-statements-\(id.uuidString)"
+            case .statement(let id): return "statement-\(id.uuidString)"
+            case .card(let account, let card): return "card-\(account.uuidString)-\(card)"
+            case .cardStatement(let id, let card): return "card-statement-\(id.uuidString)-\(card)"
+            }
+        }
+    }
+    /// One row per outline entry, so nothing asks the outline view to reload children.
+    private var browserRows: [BrowserRow] {
+        var rows: [BrowserRow] = []
+        for folder in StatementFolder.allCases {
+            rows.append(.folder(folder))
+            guard !collapsedFolders.contains(folder) else { continue }
+            let accounts = store.workspace.accounts(in: folder)
+            if accounts.isEmpty {
+                rows.append(.noAccounts(folder))
+                continue
+            }
+            for account in accounts {
+                rows.append(.account(account.id))
+                guard !collapsedAccounts.contains(account.id) else { continue }
+                let statements = store.workspace.statements(forAccount: account.id)
+                let cards = account.kind == .creditCard ? store.workspace.cardNumbers(forAccount: account.id) : []
+                if statements.isEmpty { rows.append(.noStatements(account.id)) }
+                else if cards.isEmpty { statements.forEach { rows.append(.statement($0.id)) } }
+                else {
+                    // Each card number gets its own folder; a statement covering several cards appears in each of them.
+                    var filed = Set<UUID>()
+                    for card in cards {
+                        rows.append(.card(account.id, card))
+                        let cardStatements = store.workspace.statements(forAccount: account.id, card: card)
+                        filed.formUnion(cardStatements.map(\.id))
+                        guard !collapsedCards.contains(Self.cardKey(account.id, card)) else { continue }
+                        cardStatements.forEach { rows.append(.cardStatement($0.id, card)) }
+                    }
+                    // Statements without card headings (e.g. imported before card numbers were read) stay under the account.
+                    statements.filter { !filed.contains($0.id) }.forEach { rows.append(.statement($0.id)) }
+                }
+            }
+        }
+        return rows
+    }
+    @ViewBuilder private func browserRow(_ row: BrowserRow) -> some View {
+        switch row {
+        case .folder(let folder):
+            disclosure(expanded: !collapsedFolders.contains(folder), indent: 0, action: { toggle(folder) }) {
+                Label(folder.rawValue, systemImage: Self.folderIcon(folder)).font(.subheadline.weight(.semibold))
+            }
+        case .noAccounts:
+            placeholder("No accounts yet", indent: 28)
+        case .account(let id):
+            if let account = store.workspace.account(id) {
+                disclosure(expanded: !collapsedAccounts.contains(id), indent: 16, action: { toggle(id) }) {
+                    accountLabel(account, count: store.workspace.statements(forAccount: id).count)
                 }
             }
         case .noStatements:
             placeholder("No statements yet", indent: 44)
         case .statement(let id):
             if let statement = store.workspace.statements.first(where: { $0.id == id }) {
-                statementButton(statement)
+                statementButton(statement, card: nil, indent: 44)
+            }
+        case .card(let account, let card):
+            disclosure(expanded: !collapsedCards.contains(Self.cardKey(account, card)), indent: 32, action: { toggle(card: card, account: account) }) {
+                Label("Card •••• \(card)", systemImage: "creditcard")
+                    .badge(store.workspace.statements(forAccount: account, card: card).count)
+                    .help("Statements with transactions on the card ending \(card)")
+            }
+        case .cardStatement(let id, let card):
+            if let statement = store.workspace.statements.first(where: { $0.id == id }) {
+                statementButton(statement, card: card, indent: 60)
             }
         }
+    }
+    private static func cardKey(_ account: UUID, _ card: String) -> String { account.uuidString + "|" + card }
+    private func toggle(card: String, account: UUID) {
+        let key = Self.cardKey(account, card)
+        if collapsedCards.contains(key) { collapsedCards.remove(key) } else { collapsedCards.insert(key) }
     }
     private func disclosure<Label: View>(expanded: Bool, indent: CGFloat, action: @escaping () -> Void, @ViewBuilder label: () -> Label) -> some View {
         Button(action: action) {
@@ -217,36 +317,39 @@ struct StatementDetailColumn: View {
         case .creditCard: folder = .creditCard
         case nil: folder = nil
         }
+        if let card = store.selectedCard, card != AppStore.accountLevelRows { collapsedCards.remove(Self.cardKey(accountID, card)) }
         let folderCollapsed = folder.map { collapsedFolders.contains($0) } ?? false
         guard collapsedAccounts.contains(accountID) || folderCollapsed else { return }
         collapsedAccounts.remove(accountID)
         if let folder { collapsedFolders.remove(folder) }
     }
-    // A plain header row plus conditional rows, not a DisclosureGroup: inside a selectable List on macOS the outline
-    // view's own expansion state fought the programmatic "reveal the selected statement" and the selection looped.
-    @ViewBuilder private func accountFolder(_ account: Account) -> some View {
-        let items: [Statement] = store.workspace.statements(forAccount: account.id)
-        let expanded: Bool = !collapsed.contains(account.id)
-        accountLabel(account, count: items.count, expanded: expanded)
-        if expanded {
-            if items.isEmpty { Text("No statements yet").font(.caption).foregroundStyle(.secondary).padding(.leading, 22) }
-            ForEach(items) { statement in statementRow(statement).padding(.leading, 22).tag(statement.id) }
+    /// A statement in the browser. Under a card folder it opens filtered to that card.
+    private func statementButton(_ statement: Statement, card: String?, indent: CGFloat) -> some View {
+        let showsWholeStatement: Bool = store.selectedCard == nil || store.selectedCard == AppStore.accountLevelRows
+        let matchesCard: Bool = card == nil ? showsWholeStatement : store.selectedCard == card
+        let selected: Bool = store.selectedStatement == statement.id && matchesCard
+        return Button { store.selectedCard = card; store.selectedStatement = statement.id } label: {
+            statementRow(statement)
+                .padding(.leading, indent)
+                .padding(.horizontal, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(selected ? Color.accentColor.opacity(0.18) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? .isSelected : [])
+        .contextMenu {
+            Button("Export to Excel…") { store.exportStatementExcel(statementID: statement.id) }
+            Divider()
+            Button("Remove Statement…", role: .destructive) { store.removeStatement(statement) }
+        }
     }
-    private func accountLabel(_ account: Account, count: Int, expanded: Bool) -> some View {
+    private func accountLabel(_ account: Account, count: Int) -> some View {
         let help: String = account.bank.rawValue + " · " + account.kind.rawValue
-        return Button {
-            if expanded { collapsed.insert(account.id) } else { collapsed.remove(account.id) }
-        } label: {
-            HStack {
-                Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption.bold()).foregroundStyle(.secondary).frame(width: 12)
-                Label(account.name, systemImage: "folder")
-                Spacer()
-                Text(String(count)).font(.caption).foregroundStyle(.secondary).monospacedDigit()
-            }.contentShape(Rectangle())
-        }.buttonStyle(.plain).help(help)
+        // A list-row badge is the standard macOS way to show a sidebar count (HIG: Sidebars),
+        // and VoiceOver reads it together with the account name.
+        return Label(account.name, systemImage: "folder")
+            .badge(count)
+            .help(help)
     }
     private static func folderIcon(_ folder: StatementFolder) -> String {
         switch folder {
@@ -276,11 +379,24 @@ struct StatementDetail: View {
         // Decide before the first layout, so the detail does not change shape right after it appears.
         _pdfLocked = State(initialValue: PDFDocument(url: store.pdfURL(statement))?.isLocked ?? false)
     }
+    /// Every row of the statement. Reconciliation always uses all of them, whatever card is shown.
     var entries: [Entry] { store.workspace.entries.filter { $0.statementID == statement.id } }
+    var cards: [String] { store.workspace.cardNumbers(inStatement: statement.id) }
+    var hasAccountLevelRows: Bool { !cards.isEmpty && entries.contains { $0.cardNumber == nil } }
+    /// The card filter if it applies to this statement; a filter left over from another statement shows everything.
+    var cardFilter: String? {
+        guard let card = store.selectedCard else { return nil }
+        if card == AppStore.accountLevelRows { return hasAccountLevelRows ? card : nil }
+        return cards.contains(card) ? card : nil
+    }
+    var shownEntries: [Entry] {
+        guard let cardFilter else { return entries }
+        return entries.filter { ($0.cardNumber ?? AppStore.accountLevelRows) == cardFilter }
+    }
     var selectedEntry: Entry? { entries.first { $0.id == store.selectedStatementEntry } }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack { VStack(alignment: .leading) { Text(statement.filename).font(.title3.bold()); Text(statement.profile).font(.caption).foregroundStyle(.secondary) }; Spacer(); Menu { Button("Retry with OCR…") { store.reextract(statement, forceOCR: true) }; Button("Roll back import…", role: .destructive) { store.removeStatement(statement) } } label: { Image(systemName: "ellipsis.circle") } }
+            HStack { VStack(alignment: .leading) { Text(statement.filename).font(.title3.bold()); Text(statement.profile).font(.caption).foregroundStyle(.secondary) }; Spacer(); Button(role: .destructive) { store.removeStatement(statement) } label: { Label("Remove Statement…", systemImage: "trash") }.help("Remove this statement and all of its transactions"); Menu { Button("Retry with OCR…") { store.reextract(statement, forceOCR: true) }; Divider(); Button("Remove Statement…", role: .destructive) { store.removeStatement(statement) } } label: { Image(systemName: "ellipsis.circle") } }
             DisclosureGroup("Import notes (\(statement.warnings.count))") {
                 // A long list of notes scrolls here rather than making the statement taller than the window.
                 ScrollView { VStack(alignment: .leading, spacing: 2) { ForEach(statement.warnings, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading) } } }
@@ -299,7 +415,14 @@ struct StatementDetail: View {
             HSplitView {
                 VStack(alignment: .leading) {
                     HStack {
-                        Text("\(entries.count) transactions").font(.headline)
+                        Text(cardFilter == nil ? "\(entries.count) transactions" : "\(shownEntries.count) of \(entries.count) transactions").font(.headline)
+                        if !cards.isEmpty {
+                            Picker("Card", selection: Binding(get: { cardFilter ?? "all" }, set: { store.selectedCard = $0 == "all" ? nil : $0 })) {
+                                Text("All cards").tag("all")
+                                ForEach(cards, id: \.self) { Text("Card •••• \($0)").tag($0) }
+                                if hasAccountLevelRows { Text("Account (payments, charges)").tag(AppStore.accountLevelRows) }
+                            }.fixedSize()
+                        }
                         Spacer()
                         Button("Export all to Excel…") { store.exportStatementExcel(statementID: statement.id) }
                             .help("Excel workbook of every transaction on this statement, including rows that still need review.")
@@ -308,7 +431,7 @@ struct StatementDetail: View {
                     }
                     if entries.isEmpty {
                         ContentUnavailableView { Label("No transactions extracted", systemImage: "tablecells.badge.ellipsis") } description: { Text("The PDF was saved, but the earlier parser could not build its table.") } actions: { Button("Extract transactions") { store.reextract(statement) }.buttonStyle(.borderedProminent) }
-                    } else { EntryTable(store: store, entries: entries, selection: $store.selectedStatementEntry) }
+                    } else { EntryTable(store: store, entries: shownEntries, selection: $store.selectedStatementEntry) }
                     HStack { Text("\(entries.filter(\.reviewed).count) reviewed").font(.caption).foregroundStyle(.secondary); Spacer(); Button(statement.reconciled ? "Reconciled" : "Mark reconciled") { store.change("Reconcile statement") { w in if let i = w.statements.firstIndex(where: { $0.id == statement.id }) { w.statements[i].reconciled = true } } }.disabled(statement.reconciled || store.workspace.reconciliationDifference(statement) != 0 || entries.contains { !$0.reviewed || $0.duplicateCandidate }) }
                 }.frame(minWidth: 440)
                 if showPDF {
@@ -347,7 +470,7 @@ struct EntryTable: View {
     var body: some View {
         Table(entries, selection: $selection) {
             TableColumn("Date", value: \.date).width(85)
-            TableColumn("Description") { e in VStack(alignment: .leading, spacing: 3) { Text(e.rawDescription).lineLimit(2); HStack { if e.usedOCR { Text("OCR") }; if e.duplicateCandidate { Text("Possible duplicate") }; if e.reviewed { Text("Reviewed") } else { Text("Needs review") } }.font(.caption2).foregroundStyle(e.reviewed ? Color.secondary : Color.orange) } }.width(min: 140, ideal: 220)
+            TableColumn("Description") { e in VStack(alignment: .leading, spacing: 3) { Text(e.rawDescription).lineLimit(2); HStack { if let card = e.cardNumber { Text("Card ••••\(card)") }; if e.usedOCR { Text("OCR") }; if e.duplicateCandidate { Text("Possible duplicate") }; if e.reviewed { Text("Reviewed") } else { Text("Needs review") } }.font(.caption2).foregroundStyle(e.reviewed ? Color.secondary : Color.orange) } }.width(min: 140, ideal: 220)
             TableColumn("Payee / Client") { Text($0.payee.isEmpty ? "—" : $0.payee).lineLimit(2).help($0.payee) }.width(min: 110, ideal: 160)
             TableColumn("HKD") { Text(Money.signed($0.amount)).monospacedDigit() }.width(95)
             TableColumn("Type") { Text($0.typeTitle) }.width(min: 115, ideal: 135)
@@ -366,7 +489,7 @@ struct TransactionsView: View {
     @State private var onlyReview = false
     @State private var direction: RuleDirection = .any
     @State private var sort = "Date"
-    var entries: [Entry] { store.workspace.entries.filter { (direction == .any || (direction == .incoming ? store.workspace.incoming($0) > 0 : store.workspace.incoming($0) < 0)) && (!onlyReview || !$0.reviewed || $0.duplicateCandidate) && (search.isEmpty || ($0.rawDescription + $0.payee + $0.category + $0.referenceSummary + $0.typeTitle).localizedCaseInsensitiveContains(search)) }.sorted {
+    var entries: [Entry] { store.workspace.entries.filter { (direction == .any || (direction == .incoming ? store.workspace.incoming($0) > 0 : store.workspace.incoming($0) < 0)) && (!onlyReview || !$0.reviewed || $0.duplicateCandidate) && (search.isEmpty || ($0.rawDescription + $0.payee + $0.category + $0.referenceSummary + $0.typeTitle + ($0.cardNumber ?? "")).localizedCaseInsensitiveContains(search)) }.sorted {
         if sort == "Category", $0.category != $1.category { return $0.category < $1.category }
         if sort == "Type", $0.typeTitle != $1.typeTitle { return $0.typeTitle < $1.typeTitle }
         return $0.date > $1.date

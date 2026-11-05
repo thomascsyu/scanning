@@ -64,6 +64,10 @@ public struct Entry: Codable, Identifiable, Equatable, Sendable {
     public var manuallyEdited = false
     public var duplicateCandidate = false
     public var ruleID: UUID?
+    /// Last four digits of the card a row belongs to, for card statements that list several cards
+    /// (HSBC business cards print a "5592 4033 3870 1617 NAME" heading above each card's rows).
+    /// Nil for bank rows and for account-level card rows such as repayments and finance charges.
+    public var cardNumber: String?
     public var referenceSummary: String {
         [("Invoice", invoiceReference), ("Cheque", chequeReference), ("Bank", bankReference)]
             .filter { !$0.1.isEmpty }.map { "\($0.0): \($0.1)" }.joined(separator: " · ")
@@ -186,6 +190,19 @@ public struct Workspace: Codable, Equatable, Sendable {
     /// One account's statements, newest import first.
     public func statements(forAccount id: UUID) -> [Statement] {
         statements.filter { $0.accountID == id }.sorted { $0.importedAt > $1.importedAt }
+    }
+    /// Card numbers (last four digits) found on one account's statements, in ascending order.
+    public func cardNumbers(forAccount id: UUID) -> [String] {
+        Set(entries.lazy.filter { $0.accountID == id }.compactMap(\.cardNumber)).sorted()
+    }
+    /// Statements of an account that contain at least one row of the given card, newest import first.
+    public func statements(forAccount id: UUID, card: String) -> [Statement] {
+        let ids = Set(entries.lazy.filter { $0.accountID == id && $0.cardNumber == card }.map(\.statementID))
+        return statements(forAccount: id).filter { ids.contains($0.id) }
+    }
+    /// Card numbers on one statement, in ascending order.
+    public func cardNumbers(inStatement id: UUID) -> [String] {
+        Set(entries.lazy.filter { $0.statementID == id }.compactMap(\.cardNumber)).sorted()
     }
     public func outstanding(_ invoice: Invoice) -> Int64 { invoice.startingOutstanding - allocations.filter { $0.invoiceID == invoice.id }.reduce(0) { $0 + $1.amount } }
     public func allocated(_ entryID: UUID) -> Int64 { allocations.filter { $0.entryID == entryID }.reduce(0) { $0 + $1.amount } }

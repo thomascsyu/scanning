@@ -227,15 +227,20 @@ public enum Exports {
         let account = w.account(e.accountID)
         return [account?.name ?? "", e.date, "HKD", Money.plain(e.amount), account?.kind == .creditCard ? "Positive increases amount owed" : "Positive is money received", e.rawDescription, e.payee, e.typeTitle, e.category, e.invoiceReference, e.chequeReference, e.bankReference, w.statements.first { $0.id == e.statementID }?.filename ?? "", e.source.map { String($0.page + 1) } ?? ""]
     }
+    /// Card statements that list several cards get a "Card" column (last four digits); others keep their layout.
+    static func cardLabel(_ e: Entry) -> String { e.cardNumber.map { "•••• " + $0 } ?? "" }
     public static func transactions(_ w: Workspace) -> String {
-        let rows = w.entries.filter(\.reviewed).sorted { $0.date < $1.date }.map { entryRow(w, $0) }
-        return CSV.write([transactionHeader] + rows, numericColumns: [3, 13])
+        let reviewed = w.entries.filter(\.reviewed).sorted { $0.date < $1.date }
+        let includeCard = reviewed.contains { $0.cardNumber != nil }
+        let rows = reviewed.map { entryRow(w, $0) + (includeCard ? [cardLabel($0)] : []) }
+        return CSV.write([transactionHeader + (includeCard ? ["Card"] : [])] + rows, numericColumns: [3, 13])
     }
     private static func workbookRows(_ w: Workspace, entries: [Entry], includeStatementDate: Bool) -> [[String]] {
-        var header = transactionHeader + ["Reviewed"]
+        let includeCard = entries.contains { $0.cardNumber != nil }
+        var header = transactionHeader + (includeCard ? ["Card"] : []) + ["Reviewed"]
         if includeStatementDate { header.append("Statement date") }
         let body = entries.map { entry -> [String] in
-            var row = entryRow(w, entry) + [entry.reviewed ? "Yes" : "No"]
+            var row = entryRow(w, entry) + (includeCard ? [cardLabel(entry)] : []) + [entry.reviewed ? "Yes" : "No"]
             if includeStatementDate { row.append(w.statements.first { $0.id == entry.statementID }?.periodEnd ?? "") }
             return row
         }
@@ -258,16 +263,18 @@ public enum Exports {
         return try XLSX.write(workbookRows(w, entries: entries, includeStatementDate: true), decimalColumns: [3], integerColumns: [13])
     }
     /// Every transaction of one account, reviewed or not, in transaction-date order.
-    public static func allTransactions(_ w: Workspace, accountID: UUID) throws -> Data {
+    /// With `card`, only that card's rows (last four digits), for the per-card export folders.
+    public static func allTransactions(_ w: Workspace, accountID: UUID, card: String? = nil) throws -> Data {
         guard let account = w.account(accountID) else { throw LedgerError.invalid("Account not found.") }
         let filename = Dictionary(w.statements.map { ($0.id, $0.filename) }, uniquingKeysWith: { a, _ in a })
-        let entries = w.entries.filter { $0.accountID == accountID }.sorted { lhs, rhs in
+        let entries = w.entries.filter { $0.accountID == accountID && (card == nil || $0.cardNumber == card) }.sorted { lhs, rhs in
             if lhs.date != rhs.date { return lhs.date < rhs.date }
             let leftName = filename[lhs.statementID] ?? "", rightName = filename[rhs.statementID] ?? ""
             if leftName != rightName { return leftName < rightName }
             return lhs.id.uuidString < rhs.id.uuidString
         }
-        return try XLSX.write(workbookRows(w, entries: entries, includeStatementDate: true), sheetName: safeSheetName(account.name), decimalColumns: [3], integerColumns: [13])
+        let sheetName = card.map { safeSheetName(String(account.name.prefix(26)) + " " + $0) } ?? safeSheetName(account.name)
+        return try XLSX.write(workbookRows(w, entries: entries, includeStatementDate: true), sheetName: sheetName, decimalColumns: [3], integerColumns: [13])
     }
     /// Excel forbids : \ / ? * [ ] in sheet names and limits them to 31 characters.
     static func safeSheetName(_ name: String) -> String {
@@ -293,6 +300,8 @@ public enum Exports {
         }
         return result
     }
+    /// Sub-folder for one card inside its account's export folder.
+    public static func cardFolderName(_ card: String) -> String { "Card " + card }
     public static func suggestedStatementFilename(_ statement: Statement) -> String {
         let base = (statement.filename as NSString).deletingPathExtension
         let suffix = statement.periodEnd.isEmpty ? Day.today : statement.periodEnd
