@@ -199,8 +199,20 @@ public enum XLSX {
         return letters
     }
 
+    /// XML 1.0 forbids most control characters (PDF text can contain them, e.g. U+0000 or a form feed);
+    /// a single one makes Excel refuse the whole workbook, so they are dropped.
+    static func xmlSafe(_ text: String) -> String {
+        var scalars = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars {
+            let v = scalar.value
+            let allowed = v == 0x9 || v == 0xA || v == 0xD || (0x20...0xD7FF).contains(v) || (0xE000...0xFFFD).contains(v) || v >= 0x10000
+            if allowed { scalars.append(scalar) }
+        }
+        return String(scalars)
+    }
+
     private static func xmlEscape(_ text: String) -> String {
-        text.replacingOccurrences(of: "&", with: "&amp;")
+        xmlSafe(text).replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
             .replacingOccurrences(of: "\"", with: "&quot;")

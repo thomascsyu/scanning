@@ -55,3 +55,19 @@ public enum WorkspaceBackup {
         return state
     }
 }
+public enum OriginalsStore {
+    /// Delete stored statement PDFs that no statement references any more (rolled-back imports, replaced
+    /// workspaces). Only the app's own `<UUID>.pdf` copies are considered; anything else in the folder is left alone.
+    /// Call it only when nothing else can still need a file, e.g. at launch before any undo history exists.
+    @discardableResult
+    public static func removeUnreferenced(in documents: URL, referenced: Set<String>) -> Int {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: documents.path) else { return 0 }
+        var removed = 0
+        for name in names where !referenced.contains(name) && name.lowercased().hasSuffix(".pdf")
+            && UUID(uuidString: String(name.dropLast(4))) != nil {
+            if (try? fm.removeItem(at: documents.appendingPathComponent(name))) != nil { removed += 1 }
+        }
+        return removed
+    }
+}

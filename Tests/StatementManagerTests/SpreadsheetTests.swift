@@ -172,4 +172,21 @@ final class SpreadsheetTests: XCTestCase {
         var hidden = Workspace(); let dotted = Account(name: "..", bank: .hsbc, kind: .bank); hidden.accounts = [dotted]
         XCTAssertEqual(Exports.accountFolderNames(hidden)[dotted.id], "Account")
     }
+    func testExcelExportDropsCharactersThatInvalidateXML() throws {
+        let account = Account(name: "HSBC operating", bank: .hsbc, kind: .bank)
+        let statement = Statement(accountID: account.id, filename: "Synthetic.pdf", storedFilename: "synthetic.pdf", hash: "hash")
+        let entry = Entry(statementID: statement.id, accountID: account.id, date: "2026-01-20", amount: 100, description: "PAYMENT\u{0}\u{0C}\u{1F} REF 1\t測試")
+        var workspace = Workspace(); workspace.accounts = [account]; workspace.statements = [statement]; workspace.entries = [entry]
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".xlsx")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Exports.statement(workspace, statementID: statement.id).write(to: url)
+        let archive = try Archive(url: url, accessMode: .read)
+        var sheetXML = Data()
+        guard let sheetEntry = archive["xl/worksheets/sheet1.xml"] else { return XCTFail("Missing worksheet") }
+        _ = try archive.extract(sheetEntry) { sheetXML.append($0) }
+        let parser = XMLParser(data: sheetXML)
+        XCTAssertTrue(parser.parse(), "Worksheet must be well-formed XML")
+        XCTAssertEqual(try InvoiceReader.sheets(url: url)[0].rows[1][5], "PAYMENT REF 1\t測試")
+        XCTAssertEqual(XLSX.xmlSafe("a\u{FFFE}b\u{1F600}"), "ab\u{1F600}")
+    }
 }

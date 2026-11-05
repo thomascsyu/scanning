@@ -81,3 +81,10 @@ These changes were made in a Linux environment without the macOS SDK, so neither
 - **All transactions to Excel** writes `<destination>/<Bank statements|Credit card statements>/<account>/all-transactions-<date>.xlsx`, one workbook per account; the worksheet is named after the account. Folder names replace `/ : \\`, drop leading dots, and get a ` (2)` suffix when two accounts of the same kind would share a name (case-insensitively).
 - One new synthetic test in `SpreadsheetTests.swift`. Run `./scripts/test.sh` and the Release build on the Mac before installing.
 
+
+## Version 0.7: review fixes (not yet built or tested on a Mac)
+
+- Excel exports drop characters that XML forbids (for example U+0000 or a form feed from PDF text). One such character previously made Excel refuse to open the whole workbook.
+- The import sheet no longer pre-fills the period end with today's date. When the PDF's statement date is not detected, the table waits until the period end is entered, because undated rows ("15 DEC") take their year from it.
+- PDFs of rolled-back or replaced statements are still kept for Undo during a session, and are now deleted the next time the app opens instead of remaining in Application Support indefinitely. Only the app's own `<UUID>.pdf` copies that no statement references are removed.
+- Two new synthetic tests (`SpreadsheetTests.swift`, `StatementCoreTests.swift`). Run `./scripts/test.sh`, the Release build, and `--self-check` on the Mac before installing.
